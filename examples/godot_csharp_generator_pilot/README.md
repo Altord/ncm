@@ -14,6 +14,14 @@ The JSONL rows include metadata (`id`, `family`, `acceptance`, and optional `cas
 
 The tokenizer artifact must exist at `artifacts/godot-csharp/tokenizer.pt`. Keep the tokenizer and generator configs' VQ-VAE architecture and codebook levels identical.
 
+First inspect tokenizer-only reconstruction on the untouched test targets:
+
+```bash
+.venv/bin/python evaluation/godot_csharp_codec_eval.py
+```
+
+This reports valid-token accuracy, exact round-trip count, descriptive character similarity, and reconstructed text under `runs/godot-csharp/generator-pilot/test/`. It uses the frozen codec only. Poor reconstruction points to a tokenizer/representation limitation; good reconstruction with poor generated candidates points to the generator/data/conditioning stage. No metric here alone establishes code correctness.
+
 ```bash
 source .venv/bin/activate
 
