@@ -1,0 +1,108 @@
+# Hardware/pipeline starter only. This tiny model is not expected to write useful code.
+task: code-starter
+
+tokenizer:
+  name: hf
+  model_id: gpt2
+  special_tokens:
+    eos_token: <|endoftext|>
+    pad_token: <|pad|>
+
+data:
+  input: data/mycode/train.jsonl
+  format: jsonl
+  text_key: text
+  prompt_key: prompt
+  target_key: target
+  append_eos: true
+  pad_id: 50257
+  cache_dir: data/cache/code-starter/generator
+  # Build this split with --input and --cache-dir before enabling validation.
+  encode_batch_size: 64
+
+model:
+  context_length: 64
+  in_vocab_size: 50258
+  prefix_len: 16
+  n_embd: 128
+  n_layer: 4
+  n_head: 4
+  bias: true
+  dropout: 0.0
+  attn_pattern: block_diagonal
+  use_level_encoding: true
+  use_rope: true
+  rope_base: 10000
+  use_qk_norm: false
+  raw_token_prefix: true
+  contextual_prefix: false
+  prefix_pad_token_id: 50257
+  predict_level0: false
+  query_level0: false
+  use_flex_attention: false
+  tie_heads_to_codebook: true
+  tie_heads_learn_scale: true
+  vocab_size: [256, 256, 256]
+  ctx_encoder:
+    enabled: false
+
+vqvae:
+  checkpoint_path: artifacts/code-starter/tokenizer.pt
+  n_layers: 2
+  embed_dim: 64
+  in_vocab_size: 50258
+  context_length: 64
+  compression_factor: 1
+  dropout: 0.0
+  pre_quant_groupnorm: null
+  pre_quant_dropout: 0.0
+  use_qk_norm: false
+  enc_layers: 0
+  dec_layers: 1
+  vqvae_vocab_size: [256, 256, 256, 256]
+  vector_quantizer_config:
+    clss: multiscale_residual_vector_quantizer
+    decay: 0.95
+    epsilon: 1.0e-5
+    commitment_cost: 0.25
+    quant_resi:
+      enabled: true
+      ratio: 0.5
+      share_mode: 1
+    aux:
+      fine_drop:
+        prob: 0.25
+        min_keep: 1
+    levels:
+      use_manual_levels: true
+      manual_levels: [1, 2, 4, 8]
+
+train:
+  seed: 42
+  device: cuda
+  precision: fp32
+  batch_size: 16
+  grad_accum_steps: 1
+  num_workers: 0
+  max_steps: 1000
+  warmup_steps: 50
+  lr: 0.0003
+  min_lr: 0.00003
+  betas: [0.9, 0.95]
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every: 10
+  save_every: 100
+  mask_padding: true
+  vq_loss_weight: 1.0
+  # Generator loss schedule; alpha=1 gives each code level equal total weight.
+  level_alpha: 1.0
+  corruption_start: 0.0
+  corruption_end: 0.0
+  run_dir: runs/code-starter/generator
+  validation_cache_dir: data/cache/code-starter/generator-validation
+  eval_every: 100
+  artifact_dir: artifacts/code-starter
+  artifact_filename: generator.pt
+  evaluation_config: config/eval/code-starter.yaml
+

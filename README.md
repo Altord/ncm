@@ -92,6 +92,14 @@ This runs one generation shard per visible GPU, merges them, and prints ROUGE-1/
 - `scripts/`: per-GPU generation shard and the merge that scores it
 - `config/eval/`: one config per released checkpoint, identical to the `config.yaml` shipped with it
 - `models/`, `tokenization/`: generator and tokenizer implementations
+- `docs/NCM_DATA_PATH.md`: source-level map of text, tokenizer, quantizer, generator, and decode paths
+- `docs/TRAINING_GUIDE.md`: training objectives, trainer commands, configs, outputs, and experiment guidance
+- `training/`: data preparation, resumable tokenizer training, and next-concept generator training
+- `config/train/`: small code-task starter configs for pipeline/hardware pilots
+
+## Training status
+
+This fork includes tokenizer and generator trainers. Their starter configs are intentionally small and are not expected to produce useful code. The training path has not yet been exercised on the Linux ROCm machine; follow [docs/TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md) for the data format, commands, math, checkpoints, and careful pilot sequence. See [docs/NCM_DATA_PATH.md](docs/NCM_DATA_PATH.md) for the implementation data path.
 
 ## Citation
 

@@ -154,7 +154,9 @@ if UNCOND:
         for s in range(0, n, bs):
             B = min(bs, n - s)
             l0 = torch.multinomial(L0_P.cpu(), B * L0, replacement=True).view(B, L0).cuda() if L0_P is not None else None
-            hyps += run(torch.full((B, 1), EOS, device="cuda"), l0)
+            null_prefix = torch.full((B, P), PAD, device="cuda")
+            null_prefix[:, 0] = EOS
+            hyps += run(null_prefix, l0)
             sample_seed += [seed] * B
         print(f"  shard{a.shard} seed {seed}: {n} samples", flush=True)
     idxs = list(range(len(hyps)))

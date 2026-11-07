@@ -454,6 +454,7 @@ class MultiscaleResidualVectorQuantizer(VectorQuantizerBaseClass):
         z_hat = torch.zeros_like(z_rest)
 
         z_hat_keep = []
+        vq_loss_per_level = []
         _fd_p = self._current_fine_drop_prob()
         if self.training:
             self._fd_step += 1
@@ -479,15 +480,17 @@ class MultiscaleResidualVectorQuantizer(VectorQuantizerBaseClass):
 
             indices = torch.argmin(distances, dim=1).view(B, level)
 
-            encodings = torch.zeros(B * level, vs_i, device=z.device)
-            encodings.scatter_(1, indices.view(-1, 1), 1)
-
             if self.training:
                 decay = self._get_ema_decay_level(i)
                 ema_cs = getattr(self, f'ema_cluster_size_{i}')
                 ema_w = getattr(self, f'ema_w_{i}')
-                encodings_sum = encodings.sum(0)
-                dw = torch.matmul(encodings.t(), flat_input.detach())
+                # The dense one-hot matrix is [B*level, codebook_size]. Build
+                # identical EMA counts/sums with indexed reductions instead,
+                # avoiding a potentially enormous temporary allocation.
+                flat_indices = indices.reshape(-1)
+                encodings_sum = torch.bincount(flat_indices, minlength=vs_i).to(ema_cs.dtype)
+                dw = torch.zeros_like(ema_w)
+                dw.index_add_(0, flat_indices, flat_input.detach())
                 if dist.is_available() and dist.is_initialized():
                     dist.all_reduce(encodings_sum, op=dist.ReduceOp.SUM)
                     dist.all_reduce(dw, op=dist.ReduceOp.SUM)
@@ -516,18 +519,24 @@ class MultiscaleResidualVectorQuantizer(VectorQuantizerBaseClass):
                 z_hat_keep.append(z_hat)
             z_rest = z_rest - quantized
 
-            vq_loss = vq_loss + self.commitment_cost * F.mse_loss(z_hat.detach(), z)
-            vq_loss = vq_loss + F.mse_loss(z_hat, z_no_grad)
+            vq_loss_per_level.append(
+                self.commitment_cost * F.mse_loss(z_hat.detach(), z)
+                + F.mse_loss(z_hat, z_no_grad)
+            )
 
             getattr(self, f'codebook_hit_{i}')[indices.view(B * level)] = 1
 
-        vq_loss = vq_loss / num_levels
         if do_fine_drop and len(z_hat_keep) >= 2:
             kmin = max(self.fine_drop_min_keep - 1, 0)
             kmax = len(z_hat_keep) - 2
             if kmax >= kmin:
                 K = int(torch.randint(kmin, kmax + 1, ()))
                 z_hat = z_hat_keep[K]
+                vq_loss = vq_loss_per_level[K]
+            else:
+                vq_loss = torch.stack(vq_loss_per_level).mean()
+        else:
+            vq_loss = torch.stack(vq_loss_per_level).mean()
         z_hat = z + (z_hat - z).detach()
 
         per_level_codebook_utilization = [
