@@ -1,0 +1,4 @@
+{"id":"regenerate_stamina","family":"resource_regen","prompt":"C#: regenerate stamina up to its maximum.","target":"static int Regenerate(int stamina, int amount, int max) => Math.Clamp(stamina + Math.Max(0, amount), 0, max);"}
+{"id":"clamp_speed","family":"movement_bounds","prompt":"C#: clamp player speed to a nonnegative maximum.","target":"static float ClampSpeed(float speed, float max) => Math.Clamp(speed, 0f, max);"}
+{"id":"is_invulnerable","family":"combat_state","prompt":"C#: report invulnerability while remaining time is positive.","target":"static bool IsInvulnerable(float remaining) => remaining > 0f;"}
+{"id":"distance_within_range","family":"combat_range","prompt":"Godot C#: check Vector2 distance using squared values.","target":"static bool WithinRange(Vector2 a, Vector2 b, float range) => a.DistanceSquaredTo(b) < range * range;"}

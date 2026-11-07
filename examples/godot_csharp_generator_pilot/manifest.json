@@ -1,0 +1,25 @@
+{
+  "name": "godot-csharp-generator-pilot",
+  "version": "0.1.0",
+  "license": "MIT (repository license)",
+  "provenance": "Original prompts, targets, and evaluation briefs authored for this repository; no external code snippets copied.",
+  "purpose": "Exercise the prompt-conditioned NCM generator pipeline and establish a tiny held-out smoke set.",
+  "trainer_inputs": {
+    "required_fields": ["prompt", "target"],
+    "ignored_metadata_fields": ["id", "family", "acceptance", "cases"],
+    "prompt_prefix_tokens": 16,
+    "target_tokens": 64
+  },
+  "splits": {
+    "train_records": 16,
+    "validation_records": 4,
+    "test_records": 6,
+    "full_game_eval_briefs": 3
+  },
+  "limitations": [
+    "Tiny synthetic smoke set; not a capable code-training corpus.",
+    "The 64-token target cannot contain a complete game or project.",
+    "No automated generated-code execution evaluator is included yet.",
+    "Keep test.jsonl held out from training and tuning."
+  ]
+}

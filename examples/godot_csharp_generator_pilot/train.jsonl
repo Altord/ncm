@@ -1,0 +1,16 @@
+{"id":"clamp_health","family":"health_bounds","prompt":"C#: clamp health to zero through max.","target":"static int ClampHealth(int health, int max) => Math.Clamp(health, 0, max);"}
+{"id":"apply_damage","family":"health_bounds","prompt":"C#: apply nonnegative damage; health cannot go below zero.","target":"static int ApplyDamage(int health, int damage) => Math.Max(0, health - Math.Max(0, damage));"}
+{"id":"heal_health","family":"health_bounds","prompt":"C#: heal health without exceeding max.","target":"static int Heal(int health, int amount, int max) => Math.Clamp(health + Math.Max(0, amount), 0, max);"}
+{"id":"tick_cooldown","family":"timers","prompt":"C#: reduce a cooldown by delta, floor at zero.","target":"static float TickCooldown(float time, float delta) => Math.Max(0f, time - Math.Max(0f, delta));"}
+{"id":"is_alive","family":"health_state","prompt":"C#: return whether health is above zero.","target":"static bool IsAlive(int health) => health > 0;"}
+{"id":"award_score","family":"score","prompt":"C#: add points but ignore negative awards.","target":"static int AwardScore(int score, int points) => score + Math.Max(0, points);"}
+{"id":"try_spend_stamina","family":"resource_cost","prompt":"C#: spend stamina only when cost is affordable.","target":"static bool TrySpend(int current, int cost, out int remaining) { remaining = current; if (cost < 0 || current < cost) return false; remaining = current - cost; return true; }"}
+{"id":"safe_direction","family":"movement","prompt":"Godot C#: limit a Vector2 input to unit length.","target":"static Vector2 SafeDirection(Vector2 input) => input.LengthSquared() > 1f ? input.Normalized() : input;"}
+{"id":"move_toward","family":"movement","prompt":"Godot C#: move a Vector2 toward target by speed times delta.","target":"static Vector2 StepToward(Vector2 current, Vector2 target, float speed, float delta) => current.MoveToward(target, speed * delta);"}
+{"id":"in_attack_range","family":"combat_range","prompt":"Godot C#: test whether two Vector2 positions are within range.","target":"static bool InRange(Vector2 a, Vector2 b, float range) => a.DistanceSquaredTo(b) <= range * range;"}
+{"id":"wrap_index","family":"indexing","prompt":"C#: wrap an index, including negative values, for positive count.","target":"static int WrapIndex(int index, int count) => ((index % count) + count) % count;"}
+{"id":"coin_reward","family":"score","prompt":"C#: calculate coin reward with a nonnegative multiplier.","target":"static int CoinReward(int coins, int multiplier) => Math.Max(0, coins) * Math.Max(0, multiplier);"}
+{"id":"clamp_volume","family":"settings","prompt":"C#: clamp linear audio volume between zero and one.","target":"static float ClampVolume(float value) => Math.Clamp(value, 0f, 1f);"}
+{"id":"lose_life","family":"lives","prompt":"C#: remove one life without going below zero.","target":"static int LoseLife(int lives) => Math.Max(0, lives - 1);"}
+{"id":"cooldown_ready","family":"timers","prompt":"C#: report whether a cooldown is ready.","target":"static bool IsReady(float time) => time <= 0f;"}
+{"id":"can_afford","family":"resource_cost","prompt":"C#: check currency can cover a nonnegative cost.","target":"static bool CanAfford(int currency, int cost) => cost >= 0 && currency >= cost;"}
