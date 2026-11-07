@@ -36,6 +36,14 @@ This 20-step run is only a plumbing check. It should produce finite per-level va
 
 ## Held-out test handling
 
-The trainer has no test-only evaluation path yet. Keep `test.jsonl` untouched until a separate inference/evaluation harness exists. That harness should generate one candidate per `id`, compile candidates in a clean Godot C# project, execute deterministic cases where practical, and report parse/build/test pass rates. Exact text match is not a suitable correctness metric for code.
+After the 20-step pipeline pilot, generate outputs for the held-out records with:
+
+```bash
+.venv/bin/python evaluation/godot_csharp_generator_pilot.py
+```
+
+The script writes candidate JSONL and a report under `runs/godot-csharp/generator-pilot/test/`. It reports normalized exact-reference matches as a strict diagnostic, and carries the acceptance cases forward for review. If the .NET SDK is installed, add `--compile` to compile each candidate in a temporary project. That checks syntax/type compatibility with a minimal helper stub; it does **not** execute generated code or prove game-engine compatibility. Exact text match is not a semantic correctness metric. Do not train on `test.jsonl` or tune using it.
+
+The next evaluator upgrade is an isolated C# execution harness that measures deterministic case pass rate without running unreviewed output with unrestricted access to the host. The full-game briefs in `project_eval.jsonl` remain for the later long-context, tool-using game-generation system. Their acceptance checks should be automated where possible (project opens, builds, input works, state transitions pass) and supplemented with a human play review for clarity, feel, accessibility, and fun.
 
 The first full-game briefs in `project_eval.jsonl` are intended for later end-to-end tests. Their acceptance checks should be automated where possible (project opens, builds, input works, state transitions pass) and supplemented with a human play review for clarity, feel, accessibility, and fun.
