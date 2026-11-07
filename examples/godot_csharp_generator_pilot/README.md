@@ -44,6 +44,61 @@ To compile the six original pilot targets and their tokenizer reconstructions as
 
 The report counts original-target and reconstruction compile passes separately. Compilation checks syntax/type compatibility with the evaluator's minimal `Vector2` stub; it does not execute the code or test the Godot engine.
 
+## Controlled next tokenizer experiment: code-only data mix
+
+The current mixed corpus has 75% code chunks and 25% documentation chunks. To test whether the prose share is hurting code reconstruction, build a corpus with documentation excluded and use the separate config below. “Code-only” here includes C# source, project files, Godot scenes/resources, and shader files from the existing source manifest; it does not mean C# files alone. The VQ-VAE, seed, optimizer, context length, and quantization levels stay matched to the baseline; only the data mix and run/output paths change.
+
+```bash
+.venv/bin/python -m training.build_reference_corpus \
+  --root data/reference \
+  --output data/mycode/godot-csharp-code-only \
+  --sequence-length 64 \
+  --max-doc-fraction 0
+
+wc -l data/mycode/godot-csharp-code-only/{train,validation}.jsonl
+cat data/mycode/godot-csharp-code-only/manifest.json
+
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-code-only-tokenizer.yaml \
+  --stage tokenizer
+
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-code-only-tokenizer.yaml \
+  --stage tokenizer \
+  --input data/mycode/godot-csharp-code-only/validation.jsonl \
+  --cache-dir data/cache/godot-csharp-code-only/tokenizer-validation
+```
+
+Run from scratch; do not resume the 100-step pilot because its learning-rate schedule was sized for 100 steps. Use the same 40-epoch rule, based on this corpus's own row count:
+
+```bash
+N=$(wc -l < data/mycode/godot-csharp-code-only/train.jsonl)
+EPOCH_STEPS=$(((N + 15) / 16))
+MAX_STEPS=$((EPOCH_STEPS * 40))
+if (( MAX_STEPS > 330000 )); then MAX_STEPS=330000; fi
+echo "rows=$N steps_per_epoch=$EPOCH_STEPS max_steps=$MAX_STEPS"
+
+.venv/bin/python -m training.train_tokenizer \
+  --config config/train/godot-csharp-code-only-tokenizer.yaml \
+  --max-steps "$MAX_STEPS"
+```
+
+After it finishes, compare the code-only validation round trip with the mixed baseline, then compile the six held-out snippets using the code-only artifact:
+
+```bash
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --input data/mycode/godot-csharp-code-only/validation.jsonl \
+  --text-key text --code-only \
+  --output runs/godot-csharp-code-only/codec-validation/csharp.jsonl
+
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --checkpoint artifacts/godot-csharp-code-only/tokenizer.pt \
+  --compile \
+  --output runs/godot-csharp-code-only/pilot-test/codec-compiled.jsonl
+```
+
+This isolates documentation/data-mix effects. If the held-out code metrics barely move, the next ablation should change tokenizer capacity or objective—not simply add more generator steps.
+
 ```bash
 source .venv/bin/activate
 
