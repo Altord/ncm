@@ -18,7 +18,8 @@ function Sync-Repo([string]$Name, [string]$Url, [string]$Ref, [string[]]$Paths =
         }
         if ($LASTEXITCODE -ne 0) { throw "Clone failed: $Name" }
         if ($Paths.Count -gt 0) {
-            git -C $path sparse-checkout set --cone @Paths
+            # Non-cone patterns allow directories and individual license files together.
+            git -C $path sparse-checkout set --no-cone '/*' '!/*/' @Paths
             if ($LASTEXITCODE -ne 0) { throw "Sparse checkout failed: $Name" }
         }
     } else {
@@ -27,7 +28,7 @@ function Sync-Repo([string]$Name, [string]$Url, [string]$Ref, [string[]]$Paths =
         git -C $path checkout -f FETCH_HEAD
         if ($LASTEXITCODE -ne 0) { throw "Checkout update failed: $Name" }
         if ($Paths.Count -gt 0) {
-            git -C $path sparse-checkout set --cone @Paths
+            git -C $path sparse-checkout set --no-cone '/*' '!/*/' @Paths
         } else {
             git -C $path sparse-checkout disable
         }
@@ -38,9 +39,9 @@ function Sync-Repo([string]$Name, [string]$Url, [string]$Ref, [string[]]$Paths =
 }
 
 Set-Content -Encoding utf8 (Join-Path $dest "SOURCES.tsv") "name`tref`tcommit"
-Sync-Repo "godot-docs" "https://github.com/godotengine/godot-docs.git" "4.7" @("classes", "getting_started", "tutorials", "engine_details", "about", "_styleguides", "LICENSE.txt", "index.rst")
-Sync-Repo "dotnet-docs" "https://github.com/dotnet/docs.git" "main" @("docs/csharp", "docs/fundamentals", "docs/architecture", "docs/core", "docs/standard", "LICENSE", "LICENSE-CODE")
-Sync-Repo "godot-demo-projects" "https://github.com/godotengine/godot-demo-projects.git" "4.3" @("mono", "LICENSE.md", "README.md")
+Sync-Repo "godot-docs" "https://github.com/godotengine/godot-docs.git" "4.7" @("/classes/", "/getting_started/", "/tutorials/", "/engine_details/", "/about/", "/_styleguides/", "/LICENSE.txt", "/index.rst")
+Sync-Repo "dotnet-docs" "https://github.com/dotnet/docs.git" "main" @("/docs/csharp/", "/docs/fundamentals/", "/docs/architecture/", "/docs/core/", "/docs/standard/", "/LICENSE", "/LICENSE-CODE")
+Sync-Repo "godot-demo-projects" "https://github.com/godotengine/godot-demo-projects.git" "4.3" @("/mono/", "/LICENSE.md", "/README.md")
 Sync-Repo "godot-csharp-essentials" "https://github.com/microsoft/godot-csharp-essentials.git" "main"
 Sync-Repo "google-eng-practices" "https://github.com/google/eng-practices.git" "master"
 

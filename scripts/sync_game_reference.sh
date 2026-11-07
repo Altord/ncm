@@ -26,7 +26,8 @@ sync_repo() {
     git -C "$path" checkout -f FETCH_HEAD
   fi
   if (( $# )); then
-    git -C "$path" sparse-checkout set --cone "$@"
+    # Non-cone patterns allow us to include both directories and root license files.
+    git -C "$path" sparse-checkout set --no-cone '/*' '!/*/' "$@"
   else
     git -C "$path" sparse-checkout disable
   fi
@@ -34,11 +35,11 @@ sync_repo() {
 }
 
 sync_repo godot-docs https://github.com/godotengine/godot-docs.git 4.7 \
-  classes getting_started tutorials engine_details about _styleguides LICENSE.txt index.rst
+  /classes/ /getting_started/ /tutorials/ /engine_details/ /about/ /_styleguides/ /LICENSE.txt /index.rst
 sync_repo dotnet-docs https://github.com/dotnet/docs.git main \
-  docs/csharp docs/fundamentals docs/architecture docs/core docs/standard LICENSE LICENSE-CODE
+  /docs/csharp/ /docs/fundamentals/ /docs/architecture/ /docs/core/ /docs/standard/ /LICENSE /LICENSE-CODE
 sync_repo godot-demo-projects https://github.com/godotengine/godot-demo-projects.git 4.3 \
-  mono LICENSE.md README.md
+  /mono/ /LICENSE.md /README.md
 sync_repo godot-csharp-essentials https://github.com/microsoft/godot-csharp-essentials.git main
 sync_repo google-eng-practices https://github.com/google/eng-practices.git master
 
