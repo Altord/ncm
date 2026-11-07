@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import difflib
 import json
 from pathlib import Path
@@ -45,6 +46,15 @@ def main():
     parser.add_argument(
         "--input", default="examples/godot_csharp_generator_pilot/test.jsonl",
     )
+    parser.add_argument("--text-key", default="target",
+                        help="JSONL string field to reconstruct (for example target or text).")
+    parser.add_argument("--code-only", action="store_true",
+                        help="Keep only rows whose source has a C# code extension.")
+    parser.add_argument("--code-extensions", default=".cs,.csproj",
+                        help="Comma-separated extensions used by --code-only.")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="Optional maximum number of matching records (0 means all).")
+    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument(
         "--output", default="runs/godot-csharp/generator-pilot/test/codec_roundtrip.jsonl",
     )
@@ -80,46 +90,78 @@ def main():
     total_correct = 0
     total_exact = 0
     total_char_similarity = 0.0
+    extension_stats = defaultdict(lambda: {"examples": 0, "valid_tokens": 0,
+                                           "correct_tokens": 0, "exact_sequences": 0})
     started = time.perf_counter()
 
+    accepted_extensions = {ext.strip().lower() for ext in args.code_extensions.split(",") if ext.strip()}
+    records = []
     for record in iter_records(repo_path(args.input), "jsonl"):
-        if not isinstance(record.get("target"), str):
-            raise ValueError(f"Record {record.get('id', '<unknown>')} has no string target")
-        target_ids = encode_text(tokenizer, record["target"], append_eos=True)
-        padded_ids, mask = fixed_sequence(target_ids, sequence_length, pad_id, eos_id)
-        tokens = torch.tensor([padded_ids], dtype=torch.long, device=device)
-        valid_count = sum(mask)
+        text = record.get(args.text_key)
+        if not isinstance(text, str):
+            raise ValueError(f"Record {record.get('id', '<unknown>')} has no string field {args.text_key!r}")
+        source_path = str(record.get("source", ""))
+        extension = Path(source_path).suffix.lower() if source_path else "no-source"
+        if args.code_only and extension not in accepted_extensions:
+            continue
+        records.append((record, text, extension))
+        if args.limit > 0 and len(records) >= args.limit:
+            break
+    if not records:
+        raise SystemExit("No matching records found; check --text-key and --code-only filters")
+    if args.batch_size < 1:
+        raise SystemExit("--batch-size must be at least one")
+
+    for begin in range(0, len(records), args.batch_size):
+        batch = records[begin:begin + args.batch_size]
+        padded_batch, masks = [], []
+        for _, text, _ in batch:
+            ids = encode_text(tokenizer, text, append_eos=True)
+            padded, mask = fixed_sequence(ids, sequence_length, pad_id, eos_id)
+            padded_batch.append(padded)
+            masks.append(mask)
+        tokens = torch.tensor(padded_batch, dtype=torch.long, device=device)
 
         with torch.inference_mode():
             codes = model.encode(tokens)
             logits = model.decode(codes)
-            predicted_ids = logits.argmax(dim=-1)[0].tolist()
+            predictions = logits.argmax(dim=-1).tolist()
 
-        valid_truth = padded_ids[:valid_count]
-        valid_prediction = predicted_ids[:valid_count]
-        correct = sum(a == b for a, b in zip(valid_truth, valid_prediction))
-        exact = valid_truth == valid_prediction
-        source_text = visible_text(tokenizer, valid_truth.copy(), eos_id, pad_id)
-        reconstructed_text = visible_text(tokenizer, valid_prediction.copy(), eos_id, pad_id)
-        similarity = difflib.SequenceMatcher(
-            a=source_text, b=reconstructed_text, autojunk=False,
-        ).ratio()
+        for (record, text, extension), padded_ids, mask, predicted_ids in zip(
+                batch, padded_batch, masks, predictions):
+            valid_count = sum(mask)
+            valid_truth = padded_ids[:valid_count]
+            valid_prediction = predicted_ids[:valid_count]
+            correct = sum(a == b for a, b in zip(valid_truth, valid_prediction))
+            exact = valid_truth == valid_prediction
+            source_text = visible_text(tokenizer, valid_truth.copy(), eos_id, pad_id)
+            reconstructed_text = visible_text(tokenizer, valid_prediction.copy(), eos_id, pad_id)
+            similarity = difflib.SequenceMatcher(
+                a=source_text, b=reconstructed_text, autojunk=False,
+            ).ratio()
 
-        total_valid += valid_count
-        total_correct += correct
-        total_exact += int(exact)
-        total_char_similarity += similarity
-        output_rows.append({
-            "id": record.get("id"),
-            "prompt": record.get("prompt", ""),
-            "target": record["target"],
-            "reconstructed": reconstructed_text,
-            "valid_token_count": valid_count,
-            "correct_tokens": correct,
-            "valid_token_accuracy": correct / max(1, valid_count),
-            "token_exact_match": exact,
-            "character_similarity": similarity,
-        })
+            total_valid += valid_count
+            total_correct += correct
+            total_exact += int(exact)
+            total_char_similarity += similarity
+            group = extension_stats[extension]
+            group["examples"] += 1
+            group["valid_tokens"] += valid_count
+            group["correct_tokens"] += correct
+            group["exact_sequences"] += int(exact)
+            output_rows.append({
+                "id": record.get("id"),
+                "source": record.get("source"),
+                "prompt": record.get("prompt", ""),
+                "text_key": args.text_key,
+                "target": text,
+                "reconstructed": reconstructed_text,
+                "valid_token_count": valid_count,
+                "correct_tokens": correct,
+                "valid_token_accuracy": correct / max(1, valid_count),
+                "token_exact_match": exact,
+                "character_similarity": similarity,
+            })
 
     output_path = repo_path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,9 +170,12 @@ def main():
             stream.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     report = {
-        "purpose": "Frozen VQ-VAE round-trip diagnostic on held-out short C# targets.",
+        "purpose": "Frozen VQ-VAE round-trip diagnostic; measures representation only.",
         "checkpoint": str(checkpoint_path),
         "input": str(repo_path(args.input)),
+        "text_key": args.text_key,
+        "code_only": args.code_only,
+        "code_extensions": sorted(accepted_extensions),
         "device": str(device),
         "sequence_length": sequence_length,
         "examples": len(output_rows),
@@ -139,6 +184,14 @@ def main():
         "exact_sequence_matches": total_exact,
         "exact_sequence_match_rate": total_exact / max(1, len(output_rows)),
         "mean_character_similarity": total_char_similarity / max(1, len(output_rows)),
+        "by_extension": {
+            ext: {
+                **stats,
+                "valid_token_accuracy": stats["correct_tokens"] / max(1, stats["valid_tokens"]),
+                "exact_sequence_match_rate": stats["exact_sequences"] / max(1, stats["examples"]),
+            }
+            for ext, stats in sorted(extension_stats.items())
+        },
         "elapsed_seconds": time.perf_counter() - started,
         "reconstructions": str(output_path),
         "interpretation": (

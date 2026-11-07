@@ -22,6 +22,18 @@ First inspect tokenizer-only reconstruction on the untouched test targets:
 
 This reports valid-token accuracy, exact round-trip count, descriptive character similarity, and reconstructed text under `runs/godot-csharp/generator-pilot/test/`. It uses the frozen codec only. Poor reconstruction points to a tokenizer/representation limitation; good reconstruction with poor generated candidates points to the generator/data/conditioning stage. No metric here alone establishes code correctness.
 
+To broaden the codec check to the existing file-held-out C# validation corpus:
+
+```bash
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --input data/mycode/godot-csharp-reference/validation.jsonl \
+  --text-key text \
+  --code-only \
+  --output runs/godot-csharp/codec-validation/csharp.jsonl
+```
+
+This filters to `.cs` and `.csproj` sources by default and reports accuracy by extension. It does not update weights or read the training split.
+
 ```bash
 source .venv/bin/activate
 
