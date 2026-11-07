@@ -47,7 +47,8 @@ vqvae:
         min_keep: 1
     levels:
       use_manual_levels: true
-      manual_levels: [1, 2, 4, 8]
+      # The final quantization level must equal context_length.
+      manual_levels: [1, 4, 16, 64]
 
 train:
   seed: 42

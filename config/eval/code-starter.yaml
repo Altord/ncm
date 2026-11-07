@@ -39,7 +39,8 @@ tokenizer:
           min_keep: 1
       levels:
         use_manual_levels: true
-        manual_levels: [1, 2, 4, 8]
+        # Keep this hierarchy identical to the tokenizer training config.
+        manual_levels: [1, 4, 16, 64]
 
 model:
   n_layer: 4
