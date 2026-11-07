@@ -34,6 +34,16 @@ To broaden the codec check to the existing file-held-out C# validation corpus:
 
 This filters to `.cs` and `.csproj` sources by default and reports accuracy by extension. It does not update weights or read the training split.
 
+To compile the six original pilot targets and their tokenizer reconstructions as a syntax-preservation check, run the small test split with `--compile`:
+
+```bash
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --compile \
+  --output runs/godot-csharp/generator-pilot/test/codec-compiled.jsonl
+```
+
+The report counts original-target and reconstruction compile passes separately. Compilation checks syntax/type compatibility with the evaluator's minimal `Vector2` stub; it does not execute the code or test the Godot engine.
+
 ```bash
 source .venv/bin/activate
 

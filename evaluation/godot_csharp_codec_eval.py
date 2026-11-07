@@ -19,6 +19,7 @@ from omegaconf import OmegaConf
 
 from models.vqvae import VQVAE
 from training.data import encode_text, fixed_sequence, iter_records, load_base_tokenizer
+from evaluation.godot_csharp_generator_pilot import compile_candidate
 
 
 def repo_path(value: str | Path) -> Path:
@@ -55,6 +56,9 @@ def main():
     parser.add_argument("--limit", type=int, default=0,
                         help="Optional maximum number of matching records (0 means all).")
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--compile", action="store_true",
+                        help="Compile original and reconstructed snippets; never executes them.")
+    parser.add_argument("--dotnet-framework", default="net8.0")
     parser.add_argument(
         "--output", default="runs/godot-csharp/generator-pilot/test/codec_roundtrip.jsonl",
     )
@@ -149,7 +153,7 @@ def main():
             group["valid_tokens"] += valid_count
             group["correct_tokens"] += correct
             group["exact_sequences"] += int(exact)
-            output_rows.append({
+            result_row = {
                 "id": record.get("id"),
                 "source": record.get("source"),
                 "prompt": record.get("prompt", ""),
@@ -161,7 +165,15 @@ def main():
                 "valid_token_accuracy": correct / max(1, valid_count),
                 "token_exact_match": exact,
                 "character_similarity": similarity,
-            })
+            }
+            if args.compile:
+                result_row["original_compile"] = compile_candidate(text, args.dotnet_framework)
+                result_row["reconstruction_compile"] = compile_candidate(
+                    reconstructed_text, args.dotnet_framework,
+                ) if reconstructed_text.strip() else {
+                    "status": "empty", "detail": "codec reconstructed no code",
+                }
+            output_rows.append(result_row)
 
     output_path = repo_path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +196,18 @@ def main():
         "exact_sequence_matches": total_exact,
         "exact_sequence_match_rate": total_exact / max(1, len(output_rows)),
         "mean_character_similarity": total_char_similarity / max(1, len(output_rows)),
+        "compile_requested": args.compile,
+        "original_compile_passes": sum(
+            row.get("original_compile", {}).get("status") == "passed" for row in output_rows
+        ),
+        "reconstruction_compile_passes": sum(
+            row.get("reconstruction_compile", {}).get("status") == "passed" for row in output_rows
+        ),
+        "compile_unavailable_rows": sum(
+            row.get("original_compile", {}).get("status") == "unavailable" or
+            row.get("reconstruction_compile", {}).get("status") == "unavailable"
+            for row in output_rows
+        ),
         "by_extension": {
             ext: {
                 **stats,
