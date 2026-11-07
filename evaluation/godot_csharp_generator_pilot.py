@@ -165,7 +165,8 @@ def main():
         raise SystemExit(f"Tokenizer checkpoint not found: {tokenizer_checkpoint_path}")
     tokenizer_checkpoint = torch.load(tokenizer_checkpoint_path, map_location="cpu",
                                       weights_only=False)
-    vqvae = VQVAE(**vq_config)
+    # VQVAE's quantizer factory reads nested config entries as attributes.
+    vqvae = VQVAE(**OmegaConf.create(vq_config))
     vqvae.load_state_dict(tokenizer_checkpoint["model"], strict=True)
     vqvae.to(device).eval()
     for parameter in vqvae.parameters():
