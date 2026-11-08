@@ -60,10 +60,12 @@ def main():
     since_log = 0
     last_log_time = time.perf_counter()
     best_val = float("inf")
+    best_checkpoint_path = None
+    best_validation_step = None
     last_util = None
 
     def validate(current_step):
-        nonlocal best_val
+        nonlocal best_val, best_checkpoint_path, best_validation_step
         if val_loader is None:
             return
         if len(val_loader) == 0:
@@ -92,7 +94,8 @@ def main():
         run.log_validation(record)
         if record["val_loss"] < best_val:
             best_val = record["val_loss"]
-            run.checkpoint("best.pt", checkpoint_state(
+            best_validation_step = current_step
+            best_checkpoint_path = run.checkpoint("best.pt", checkpoint_state(
                 model, optim, scaler, current_step - 1, cfg, "tokenizer",
                 {"best_validation_loss": best_val}))
 
@@ -157,8 +160,13 @@ def main():
             raise RuntimeError("Prepared cache is empty")
     final = run.checkpoint("final.pt", checkpoint_state(model, optim, scaler,
                                                         max_steps - 1, cfg, "tokenizer"))
-    export_artifact(run, cfg, str(cfg.train.get("artifact_filename", "tokenizer.pt")), final, {
-        "stage": "tokenizer", "step": max_steps,
+    # Export the checkpoint selected by held-out loss when this invocation
+    # performed validation. Keep final.pt as the resumable end-of-run state.
+    artifact_checkpoint = best_checkpoint_path or final
+    export_artifact(run, cfg, str(cfg.train.get("artifact_filename", "tokenizer.pt")), artifact_checkpoint, {
+        "stage": "tokenizer", "step": best_validation_step or max_steps,
+        "selected_checkpoint": str(artifact_checkpoint.name),
+        "best_validation_loss": best_val if best_checkpoint_path else None,
         "cache_manifest": str(Path(cfg.data.cache_dir, "manifest.json").resolve()),
         "code": "NCM tokenizer reconstruction and VQ objective",
     })

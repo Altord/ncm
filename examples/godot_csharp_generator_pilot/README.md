@@ -104,6 +104,85 @@ For a direct validation comparison, run the same first command again with `--che
 
 This isolates documentation/data-mix effects. If the held-out code metrics barely move, the next ablation should change tokenizer capacity or objective—not simply add more generator steps.
 
+## Audit result and NCM-aligned capacity experiment
+
+The code-only run completed 61,720 updates. Its held-out result (81.83% token accuracy, 2.61% exact 64-token chunks, 71.86% character similarity) is essentially the same as the mixed-data result. The six-snippet compile check remains 0/6 reconstructed snippets. Removing prose documentation was therefore not enough to fix syntax loss.
+
+The principal architecture gap is scale. This project's pilot uses latent width 64, four levels `[1, 4, 16, 64]`, codebooks of 256 entries, two decoder attention heads, no pre-quant normalization, and no learned first-level sampling. The published NCM WMT14 tokenizer uses context length 64 but width 384, eleven levels, 4,096-entry codebooks, six decoder heads, pre-quant GroupNorm and dropout, learned first-level sampling, and 0.5 fine-level dropout. The new `config/train/godot-csharp-ncm-aligned-tokenizer.yaml` adopts those context-64 architecture/quantizer settings, while retaining this project's GPT-2 tokenizer, C# data, and batch size 16. This is a capacity-and-recipe experiment, not an exact reproduction of WMT14. Sources: [NCM paper](https://arxiv.org/html/2610.14162), [upstream WMT14 config](https://github.com/HazyResearch/ncm/blob/main/config/eval/wmt14.yaml).
+
+Before another long run, compare the existing checkpoints selected by validation loss. The trainer now exports the best validation checkpoint as the artifact for future runs; `final.pt` remains the resumable last-step checkpoint.
+
+```bash
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --config config/train/godot-csharp-generator-pilot.yaml \
+  --checkpoint runs/godot-csharp/tokenizer/checkpoints/best.pt \
+  --input data/mycode/godot-csharp-code-only/validation.jsonl \
+  --text-key text --code-only \
+  --output runs/godot-csharp/mixed-best/codec-validation/csharp.jsonl
+
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --config config/train/godot-csharp-generator-pilot.yaml \
+  --checkpoint runs/godot-csharp-code-only/tokenizer/checkpoints/best.pt \
+  --input data/mycode/godot-csharp-code-only/validation.jsonl \
+  --text-key text --code-only \
+  --output runs/godot-csharp-code-only/best/codec-validation/csharp.jsonl
+
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --config config/train/godot-csharp-generator-pilot.yaml \
+  --checkpoint runs/godot-csharp-code-only/tokenizer/checkpoints/best.pt \
+  --compile \
+  --output runs/godot-csharp-code-only/best/pilot-test/codec-compiled.jsonl
+```
+
+If `best.pt` is missing for the mixed run, use its `latest.pt`; the saved run may predate validation-checkpoint selection. For the code-only run, use its `best.pt` for this audit rather than `artifacts/godot-csharp-code-only/tokenizer.pt`, which was exported from the final step before the trainer fix.
+
+First smoke-test the larger configuration for 100 steps to check that it fits and produces finite losses. Keep the smoke outputs separate from the full run:
+
+```bash
+cp config/train/godot-csharp-ncm-aligned-tokenizer.yaml /tmp/godot-csharp-ncm-aligned-smoke.yaml
+sed -i 's#runs/godot-csharp-ncm-aligned/tokenizer#runs/godot-csharp-ncm-aligned/tokenizer-smoke#; s#artifacts/godot-csharp-ncm-aligned#artifacts/godot-csharp-ncm-aligned-smoke#' \
+  /tmp/godot-csharp-ncm-aligned-smoke.yaml
+
+.venv/bin/python -m training.train_tokenizer \
+  --config /tmp/godot-csharp-ncm-aligned-smoke.yaml \
+  --max-steps 100
+
+tail -n 5 runs/godot-csharp-ncm-aligned/tokenizer-smoke/logs/train.jsonl
+```
+
+If the smoke run completes without an out-of-memory error and logs finite loss/VRAM values, start a fresh full run using 40 passes over the code-only training split:
+
+```bash
+N=$(wc -l < data/mycode/godot-csharp-code-only/train.jsonl)
+EPOCH_STEPS=$(((N + 15) / 16))
+MAX_STEPS=$((EPOCH_STEPS * 40))
+if (( MAX_STEPS > 330000 )); then MAX_STEPS=330000; fi
+echo "rows=$N steps_per_epoch=$EPOCH_STEPS max_steps=$MAX_STEPS"
+
+.venv/bin/python -m training.train_tokenizer \
+  --config config/train/godot-csharp-ncm-aligned-tokenizer.yaml \
+  --max-steps "$MAX_STEPS"
+```
+
+Evaluate the aligned run on the same code-only validation split and six compile cases, using its artifact:
+
+```bash
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --config config/train/godot-csharp-generator-pilot.yaml \
+  --checkpoint artifacts/godot-csharp-ncm-aligned/tokenizer.pt \
+  --input data/mycode/godot-csharp-code-only/validation.jsonl \
+  --text-key text --code-only \
+  --output runs/godot-csharp-ncm-aligned/codec-validation/csharp.jsonl
+
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --config config/train/godot-csharp-ncm-aligned-tokenizer.yaml \
+  --checkpoint artifacts/godot-csharp-ncm-aligned/tokenizer.pt \
+  --compile \
+  --output runs/godot-csharp-ncm-aligned/pilot-test/codec-compiled.jsonl
+```
+
+The code-only `best.pt` evaluation is the immediate checkpoint-selection control. The aligned run tests whether the much smaller pilot codec was the source of the gap. Generator training stays paused until reconstruction improves substantially and the compile check passes.
+
 ```bash
 source .venv/bin/activate
 
