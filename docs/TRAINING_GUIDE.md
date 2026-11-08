@@ -51,6 +51,8 @@ For Godot/C# tokenizer configs, checkpoint selection uses held-out token accurac
 
 `training.build_reference_corpus` accepts `--include-extensions .cs,.csproj` to build a strict C# source corpus. Without this option, `--max-doc-fraction 0` removes prose but still includes Godot text resources such as `.tscn`, `.tres`, `.godot`, and `.gdshader`; the result is code/config-only, not C#-only. Use the same generated validation split for the mixed and strict C# checkpoint evaluations.
 
+`config/train/godot-csharp-strict-8level-tokenizer.yaml` is a one-factor ablation for code reconstruction. It keeps the strict C# corpus and prototype settings fixed while changing the hierarchy from four levels `[1, 4, 16, 64]` to eight `[1, 2, 4, 8, 16, 32, 48, 64]`. Compare its held-out token accuracy, exact-chunk rate, and pilot compile passes with the four-level strict baseline before changing latent width or codebook size.
+
 ### 3.2 Generator stage
 
 Freeze the tokenizer and encode each example into clean target codes. Construct generator inputs from cumulative reconstructions of earlier levels. To reduce error accumulation at inference, the paper corrupts some conditioning inputs with random IDs from the same codebook, while leaving target labels clean.
