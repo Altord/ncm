@@ -183,6 +183,17 @@ Evaluate the aligned run on the same code-only validation split and six compile 
 
 The aligned run tests whether the much smaller pilot codec was the source of the gap. It also writes `val_token_accuracy` and `val_exact_sequence_match_rate` to validation logs and exports the best checkpoint under the configured exact-chunk criterion. Generator training stays paused until reconstruction improves substantially and the compile check passes.
 
+## Diagnose codec compile failures
+
+After running the aligned codec with `--compile`, inspect the exact changed identifiers, operators, punctuation, and compiler messages:
+
+```bash
+.venv/bin/python evaluation/inspect_codec_failures.py \
+  --input runs/godot-csharp-ncm-aligned/pilot-test/codec-compiled.jsonl
+```
+
+This compares each original pilot target with its reconstruction and prints token-level differences for failed rows. Use those failures to decide the next tokenizer change; do not infer the cause from token accuracy alone.
+
 ```bash
 source .venv/bin/activate
 
