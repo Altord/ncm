@@ -110,7 +110,7 @@ The code-only run completed 61,720 updates. Its held-out result (81.83% token ac
 
 The principal architecture gap is scale. This project's pilot uses latent width 64, four levels `[1, 4, 16, 64]`, codebooks of 256 entries, two decoder attention heads, no pre-quant normalization, and no learned first-level sampling. The published NCM WMT14 tokenizer uses context length 64 but width 384, eleven levels, 4,096-entry codebooks, six decoder heads, pre-quant GroupNorm and dropout, learned first-level sampling, and 0.5 fine-level dropout. The new `config/train/godot-csharp-ncm-aligned-tokenizer.yaml` adopts those context-64 architecture/quantizer settings, while retaining this project's GPT-2 tokenizer, C# data, and batch size 16. This is a capacity-and-recipe experiment, not an exact reproduction of WMT14. Sources: [NCM paper](https://arxiv.org/html/2610.14162), [upstream WMT14 config](https://github.com/HazyResearch/ncm/blob/main/config/eval/wmt14.yaml).
 
-Before another long run, compare the existing checkpoints selected by validation loss. The trainer now exports the best validation checkpoint as the artifact for future runs; `final.pt` remains the resumable last-step checkpoint.
+The previous code-only run's best-by-loss checkpoint gave 80.81% token accuracy and 63 exact chunks, versus 81.83% and 59 chunks for its final artifact. This shows why we should record and choose by code-relevant reconstruction metrics instead of treating cross-entropy as the only quality signal. The trainer now logs both token accuracy and exact-chunk rate. The NCM-aligned config selects the checkpoint with the best exact-chunk rate, breaking ties by token accuracy; `final.pt` remains the resumable last-step checkpoint.
 
 ```bash
 .venv/bin/python evaluation/godot_csharp_codec_eval.py \
@@ -134,7 +134,7 @@ Before another long run, compare the existing checkpoints selected by validation
   --output runs/godot-csharp-code-only/best/pilot-test/codec-compiled.jsonl
 ```
 
-If `best.pt` is missing for the mixed run, use its `latest.pt`; the saved run may predate validation-checkpoint selection. For the code-only run, use its `best.pt` for this audit rather than `artifacts/godot-csharp-code-only/tokenizer.pt`, which was exported from the final step before the trainer fix.
+If `best.pt` is missing for the mixed run, use its `latest.pt`; the saved run may predate validation-checkpoint metric logging. For the code-only run, `best.pt` was selected by validation loss before this metric change. It is useful for comparison, but future runs will use the configured code metrics.
 
 First smoke-test the larger configuration for 100 steps to check that it fits and produces finite losses. Keep the smoke outputs separate from the full run:
 
@@ -150,7 +150,7 @@ sed -i 's#runs/godot-csharp-ncm-aligned/tokenizer#runs/godot-csharp-ncm-aligned/
 tail -n 5 runs/godot-csharp-ncm-aligned/tokenizer-smoke/logs/train.jsonl
 ```
 
-If the smoke run completes without an out-of-memory error and logs finite loss/VRAM values, start a fresh full run using 40 passes over the code-only training split:
+If the smoke run completes without an out-of-memory error and logs finite loss/VRAM values, the NCM-aligned model fits this GPU at the tested batch size. Start a fresh full run using 40 passes over the code-only training split:
 
 ```bash
 N=$(wc -l < data/mycode/godot-csharp-code-only/train.jsonl)
@@ -181,7 +181,7 @@ Evaluate the aligned run on the same code-only validation split and six compile 
   --output runs/godot-csharp-ncm-aligned/pilot-test/codec-compiled.jsonl
 ```
 
-The code-only `best.pt` evaluation is the immediate checkpoint-selection control. The aligned run tests whether the much smaller pilot codec was the source of the gap. Generator training stays paused until reconstruction improves substantially and the compile check passes.
+The aligned run tests whether the much smaller pilot codec was the source of the gap. It also writes `val_token_accuracy` and `val_exact_sequence_match_rate` to validation logs and exports the best checkpoint under the configured exact-chunk criterion. Generator training stays paused until reconstruction improves substantially and the compile check passes.
 
 ```bash
 source .venv/bin/activate

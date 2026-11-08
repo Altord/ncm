@@ -80,6 +80,8 @@ train:
   run_dir: runs/godot-csharp-ncm-aligned/tokenizer
   validation_cache_dir: data/cache/godot-csharp-code-only/tokenizer-validation
   eval_every: 2500
+  checkpoint_metric: val_exact_sequence_match_rate
+  checkpoint_metric_mode: max
   artifact_dir: artifacts/godot-csharp-ncm-aligned
   artifact_filename: tokenizer.pt
   evaluation_config: config/eval/code-starter.yaml

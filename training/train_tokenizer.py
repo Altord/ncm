@@ -59,13 +59,19 @@ def main():
     micro = 0
     since_log = 0
     last_log_time = time.perf_counter()
-    best_val = float("inf")
+    selection_metric = str(cfg.train.get("checkpoint_metric", "val_loss"))
+    selection_mode = str(cfg.train.get("checkpoint_metric_mode", "min")).lower()
+    if selection_mode not in {"min", "max"}:
+        raise ValueError("train.checkpoint_metric_mode must be 'min' or 'max'")
+    best_selection_value = float("inf") if selection_mode == "min" else -float("inf")
+    best_tiebreak_value = -float("inf")
     best_checkpoint_path = None
     best_validation_step = None
     last_util = None
 
     def validate(current_step):
-        nonlocal best_val, best_checkpoint_path, best_validation_step
+        nonlocal best_selection_value, best_tiebreak_value
+        nonlocal best_checkpoint_path, best_validation_step
         if val_loader is None:
             return
         if len(val_loader) == 0:
@@ -73,6 +79,9 @@ def main():
         model.eval()
         totals = {"loss": 0.0, "recon_ce": 0.0, "vq": 0.0}
         seen = 0
+        valid_tokens = 0
+        correct_tokens = 0
+        exact_sequences = 0
         with torch.no_grad():
             for vb in val_loader:
                 vx = vb["tokens"].to(device, non_blocking=True).long()
@@ -83,6 +92,10 @@ def main():
                     ce = ((ce * valid).sum() / valid.sum().clamp_min(1)
                           if mask_padding else ce.mean())
                     loss = ce + vq_weight * vq_loss.float()
+                predictions = logits.argmax(dim=-1)
+                valid_tokens += int(valid.sum())
+                correct_tokens += int(((predictions == vx) & valid).sum())
+                exact_sequences += int((((predictions == vx) | ~valid).all(dim=1)).sum())
                 n = int(vx.shape[0])
                 seen += n
                 totals["loss"] += float(loss) * n
@@ -90,14 +103,29 @@ def main():
                 totals["vq"] += float(vq_loss) * n
         model.train()
         record = {"stage": "tokenizer", "step": current_step, "examples": seen,
-                  **{f"val_{k}": v / max(1, seen) for k, v in totals.items()}}
+                  **{f"val_{k}": v / max(1, seen) for k, v in totals.items()},
+                  "val_token_accuracy": correct_tokens / max(1, valid_tokens),
+                  "val_exact_sequence_match_rate": exact_sequences / max(1, seen)}
         run.log_validation(record)
-        if record["val_loss"] < best_val:
-            best_val = record["val_loss"]
+        if selection_metric not in record:
+            raise ValueError(
+                f"Unknown train.checkpoint_metric {selection_metric!r}; "
+                f"available metrics: {sorted(record)}"
+            )
+        selected_value = float(record[selection_metric])
+        tie_value = float(record["val_token_accuracy"])
+        improved = (selected_value < best_selection_value if selection_mode == "min"
+                    else selected_value > best_selection_value)
+        tied_better = selected_value == best_selection_value and tie_value > best_tiebreak_value
+        if improved or tied_better:
+            best_selection_value = selected_value
+            best_tiebreak_value = tie_value
             best_validation_step = current_step
             best_checkpoint_path = run.checkpoint("best.pt", checkpoint_state(
                 model, optim, scaler, current_step - 1, cfg, "tokenizer",
-                {"best_validation_loss": best_val}))
+                {"best_validation_metric": selection_metric,
+                 "best_validation_value": best_selection_value,
+                 "best_validation_token_accuracy": best_tiebreak_value}))
 
     while step < max_steps:
         progressed = False
@@ -166,7 +194,9 @@ def main():
     export_artifact(run, cfg, str(cfg.train.get("artifact_filename", "tokenizer.pt")), artifact_checkpoint, {
         "stage": "tokenizer", "step": best_validation_step or max_steps,
         "selected_checkpoint": str(artifact_checkpoint.name),
-        "best_validation_loss": best_val if best_checkpoint_path else None,
+        "best_validation_metric": selection_metric if best_checkpoint_path else None,
+        "best_validation_value": best_selection_value if best_checkpoint_path else None,
+        "best_validation_token_accuracy": best_tiebreak_value if best_checkpoint_path else None,
         "cache_manifest": str(Path(cfg.data.cache_dir, "manifest.json").resolve()),
         "code": "NCM tokenizer reconstruction and VQ objective",
     })
