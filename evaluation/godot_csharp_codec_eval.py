@@ -90,8 +90,14 @@ def main():
     pad_id, eos_id = int(tokenizer.pad_token_id), int(tokenizer.eos_token_id)
 
     vq_config = OmegaConf.to_container(cfg.vqvae, resolve=True)
-    configured_checkpoint = vq_config.pop("checkpoint_path")
-    checkpoint_path = repo_path(args.checkpoint or configured_checkpoint)
+    configured_checkpoint = vq_config.pop("checkpoint_path", None)
+    checkpoint_value = args.checkpoint or configured_checkpoint
+    if not checkpoint_value:
+        raise SystemExit(
+            "No tokenizer checkpoint was specified; pass --checkpoint or use a config "
+            "with vqvae.checkpoint_path."
+        )
+    checkpoint_path = repo_path(checkpoint_value)
     if not checkpoint_path.is_file():
         raise SystemExit(f"Tokenizer checkpoint not found: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
