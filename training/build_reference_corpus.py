@@ -78,6 +78,10 @@ def main():
     ap.add_argument("--validation-fraction", type=float, default=0.1)
     ap.add_argument("--max-doc-fraction", type=float, default=0.25,
                      help="Cap prose chunks to this fraction of each split; remaining data is code/config.")
+    ap.add_argument(
+        "--include-extensions", default="",
+        help="Optional comma-separated file extensions to include (for example .cs,.csproj).",
+    )
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
     root = args.root.resolve()
@@ -87,6 +91,16 @@ def main():
         raise SystemExit("Use sequence_length >= 16 and validation_fraction between 0 and 0.5")
     if not 0 <= args.max_doc_fraction < 1:
         raise SystemExit("max-doc-fraction must be in [0, 1)")
+    include_extensions = {
+        ext.strip().lower() if ext.strip().startswith(".") else f".{ext.strip().lower()}"
+        for ext in args.include_extensions.split(",") if ext.strip()
+    }
+    supported_extensions = CODE_SUFFIXES | DOC_SUFFIXES
+    unknown_extensions = include_extensions - supported_extensions
+    if unknown_extensions:
+        raise SystemExit(
+            "Unsupported include extensions: " + ", ".join(sorted(unknown_extensions))
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
     max_tokens = args.sequence_length - 2
@@ -97,7 +111,9 @@ def main():
     for path in sorted(root.rglob("*")):
         if not path.is_file() or any(part in SKIP_PARTS for part in path.parts):
             continue
-        if path.name.lower().startswith("license") or path.suffix.lower() not in CODE_SUFFIXES | DOC_SUFFIXES:
+        if path.name.lower().startswith("license") or path.suffix.lower() not in supported_extensions:
+            continue
+        if include_extensions and path.suffix.lower() not in include_extensions:
             continue
         try:
             if path.stat().st_size > 2_000_000:
@@ -151,6 +167,7 @@ def main():
         "file_counts": file_counts,
         "chunk_counts": counts,
         "deduplicated_files": len(seen_hashes),
+        "include_extensions": sorted(include_extensions) if include_extensions else None,
         "split_rule": "stable SHA-256 of relative file path; no chunks from one file cross splits",
     }
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

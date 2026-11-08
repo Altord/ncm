@@ -49,6 +49,8 @@ The quantizer updates codebooks through EMA statistics in training mode. `traini
 
 For Godot/C# tokenizer configs, checkpoint selection uses held-out token accuracy (`checkpoint_metric: val_token_accuracy`, mode `max`) rather than the combined loss. This keeps checkpoint choice aligned with codec reconstruction; it does not change the training objective or gradients. Keep exact-chunk accuracy and compile results as additional evaluation gates, because high token accuracy alone can still leave many chunks with at least one error.
 
+`training.build_reference_corpus` accepts `--include-extensions .cs,.csproj` to build a strict C# source corpus. Without this option, `--max-doc-fraction 0` removes prose but still includes Godot text resources such as `.tscn`, `.tres`, `.godot`, and `.gdshader`; the result is code/config-only, not C#-only. Use the same generated validation split for the mixed and strict C# checkpoint evaluations.
+
 ### 3.2 Generator stage
 
 Freeze the tokenizer and encode each example into clean target codes. Construct generator inputs from cumulative reconstructions of earlier levels. To reduce error accumulation at inference, the paper corrupts some conditioning inputs with random IDs from the same codebook, while leaving target labels clean.
