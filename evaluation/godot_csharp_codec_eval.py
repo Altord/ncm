@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 import difflib
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -32,6 +33,14 @@ def visible_text(tokenizer, ids: list[int], eos_id: int, pad_id: int) -> str:
         ids = ids[:ids.index(eos_id)]
     ids = [token_id for token_id in ids if token_id != pad_id]
     return tokenizer.decode(ids, skip_special_tokens=True)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def main():
@@ -104,7 +113,9 @@ def main():
 
     accepted_extensions = {ext.strip().lower() for ext in args.code_extensions.split(",") if ext.strip()}
     records = []
-    for record in iter_records(repo_path(args.input), "jsonl"):
+    input_path = repo_path(args.input)
+    input_digest = file_sha256(input_path)
+    for record in iter_records(input_path, "jsonl"):
         text = record.get(args.text_key)
         if not isinstance(text, str):
             raise ValueError(f"Record {record.get('id', '<unknown>')} has no string field {args.text_key!r}")
@@ -188,7 +199,8 @@ def main():
     report = {
         "purpose": "Frozen VQ-VAE round-trip diagnostic; measures representation only.",
         "checkpoint": str(checkpoint_path),
-        "input": str(repo_path(args.input)),
+        "input": str(input_path),
+        "input_sha256": input_digest,
         "text_key": args.text_key,
         "code_only": args.code_only,
         "code_extensions": sorted(accepted_extensions),
@@ -239,7 +251,20 @@ def main():
         compare_path = repo_path(args.compare_report)
         if not compare_path.is_file():
             raise SystemExit(f"Comparison report not found: {compare_path}")
-        previous = json.loads(compare_path.read_text(encoding="utf-8"))
+        candidate_previous = json.loads(compare_path.read_text(encoding="utf-8"))
+        matching_fields = ("input_sha256", "text_key", "code_only", "sequence_length", "code_extensions")
+        mismatches = [
+            field for field in matching_fields
+            if field not in candidate_previous or candidate_previous[field] != report.get(field)
+        ]
+        if mismatches:
+            print(
+                "Comparison skipped: the reports do not prove they use the same input/config "
+                f"({', '.join(mismatches)} differ or are missing). Prior input: "
+                f"{candidate_previous.get('input', '<unknown>')}"
+            )
+        else:
+            previous = candidate_previous
 
     def show_metric(label, key, suffix="%", digits=2, scale=100):
         current = float(report[key]) * scale
