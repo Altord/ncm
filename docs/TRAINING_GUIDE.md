@@ -53,6 +53,8 @@ For Godot/C# tokenizer configs, checkpoint selection uses held-out token accurac
 
 `config/train/godot-csharp-strict-8level-tokenizer.yaml` is a one-factor ablation for code reconstruction. It keeps the strict C# corpus and prototype settings fixed while changing the hierarchy from four levels `[1, 4, 16, 64]` to eight `[1, 2, 4, 8, 16, 32, 48, 64]`. Compare its held-out token accuracy, exact-chunk rate, and pilot compile passes with the four-level strict baseline before changing latent width or codebook size.
 
+`config/train/godot-csharp-strict-16level-tokenizer.yaml` continues that capacity ablation from eight to sixteen hierarchy levels while keeping the same strict C# data, 64-dimensional latent width, 256 entries per codebook, and training settings. Its schedule ends at the 64-token context limit. Compare it against the four- and eight-level reports; more levels are useful only if held-out exact chunks and pilot compileability improve, not merely training loss.
+
 ### 3.2 Generator stage
 
 Freeze the tokenizer and encode each example into clean target codes. Construct generator inputs from cumulative reconstructions of earlier levels. To reduce error accumulation at inference, the paper corrupts some conditioning inputs with random IDs from the same codebook, while leaving target labels clean.
