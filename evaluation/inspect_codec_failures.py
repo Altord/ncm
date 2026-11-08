@@ -60,13 +60,22 @@ def compiler_errors(result: dict) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "input_path", nargs="?",
+        help="JSONL produced by godot_csharp_codec_eval.py --compile",
+    )
+    parser.add_argument(
         "--input",
-        default="runs/godot-csharp-ncm-aligned/pilot-test/codec-compiled.jsonl",
+        dest="input_option",
         help="JSONL produced by godot_csharp_codec_eval.py --compile",
     )
     parser.add_argument("--all", action="store_true", help="Show passing rows too")
     args = parser.parse_args()
-    path = Path(args.input)
+    if args.input_path and args.input_option:
+        parser.error("provide the input path either positionally or with --input, not both")
+    path = Path(
+        args.input_option or args.input_path
+        or "runs/godot-csharp-ncm-aligned/pilot-test/codec-compiled.jsonl"
+    )
     if not path.is_absolute():
         path = ROOT / path
     if not path.is_file():
