@@ -68,6 +68,8 @@ train:
   save_every: 5000
   mask_padding: true
   vq_loss_weight: 1.0
+  checkpoint_metric: val_token_accuracy
+  checkpoint_metric_mode: max
   run_dir: runs/godot-csharp-code-only/tokenizer
   validation_cache_dir: data/cache/godot-csharp-code-only/tokenizer-validation
   eval_every: 10000

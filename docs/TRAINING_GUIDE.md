@@ -47,6 +47,8 @@ The first term is token reconstruction cross-entropy. The other terms are commit
 
 The quantizer updates codebooks through EMA statistics in training mode. `training.train_tokenizer` calculates reconstruction cross-entropy, combines it with VQ loss, handles padding masks, optimizer/scheduler, validation, logging, and checkpoints. The fine-drop correction in `models/quant.py` applies the VQ penalty at the same sampled cumulative cutoff as reconstruction; EMA codebook statistics still update at every level.
 
+For Godot/C# tokenizer configs, checkpoint selection uses held-out token accuracy (`checkpoint_metric: val_token_accuracy`, mode `max`) rather than the combined loss. This keeps checkpoint choice aligned with codec reconstruction; it does not change the training objective or gradients. Keep exact-chunk accuracy and compile results as additional evaluation gates, because high token accuracy alone can still leave many chunks with at least one error.
+
 ### 3.2 Generator stage
 
 Freeze the tokenizer and encode each example into clean target codes. Construct generator inputs from cumulative reconstructions of earlier levels. To reduce error accumulation at inference, the paper corrupts some conditioning inputs with random IDs from the same codebook, while leaving target labels clean.
