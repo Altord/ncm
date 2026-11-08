@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 import re
@@ -72,7 +73,7 @@ def main() -> int:
         parser.error(f"input file not found: {path}")
 
     rows = list(read_rows(path))
-    failures = 0
+    diagnostic_codes = Counter()
     for row in rows:
         original = str(row.get("target", ""))
         reconstructed = str(row.get("reconstructed", ""))
@@ -81,7 +82,6 @@ def main() -> int:
         passed = decoded_result.get("status") == "passed"
         if passed and not args.all:
             continue
-        failures += int(not passed)
         print(f"\n--- {row.get('id', '<no id>')} ---")
         print(
             f"compile: original={original_result.get('status', 'unknown')}, "
@@ -101,8 +101,20 @@ def main() -> int:
         if errors:
             print("compiler diagnostics:")
             print("\n".join(f"  {line}" for line in errors))
+            diagnostic_codes.update(re.findall(r"error (CS\d+)", "\n".join(errors)))
 
-    print(f"\nRows: {len(rows)}; reconstruction compile failures shown: {failures}")
+    original_passes = sum(row.get("original_compile", {}).get("status") == "passed" for row in rows)
+    reconstruction_passes = sum(
+        row.get("reconstruction_compile", {}).get("status") == "passed" for row in rows
+    )
+    print("\n=== Human-readable failure summary ===")
+    print(f"Original targets compiled: {original_passes}/{len(rows)}")
+    print(f"Reconstructed targets compiled: {reconstruction_passes}/{len(rows)}")
+    print(f"Failures requiring diagnosis: {len(rows) - reconstruction_passes}")
+    if diagnostic_codes:
+        common = ", ".join(f"{code} ({count})" for code, count in diagnostic_codes.most_common(5))
+        print(f"Most frequent compiler errors: {common}")
+    print(f"Detailed reconstructions: {path}")
     return 0
 
 

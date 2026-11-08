@@ -58,6 +58,10 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--compile", action="store_true",
                         help="Compile original and reconstructed snippets; never executes them.")
+    parser.add_argument(
+        "--compare-report", default="",
+        help="Optional prior .report.json from the same input for a concise before/after comparison.",
+    )
     parser.add_argument("--dotnet-framework", default="net8.0")
     parser.add_argument(
         "--output", default="runs/godot-csharp/generator-pilot/test/codec_roundtrip.jsonl",
@@ -226,6 +230,52 @@ def main():
     report_path = output_path.with_suffix(".report.json")
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2), flush=True)
+    print("\n=== Human-readable codec summary ===")
+    print(f"Checkpoint: {checkpoint_path}")
+    print(f"Examples:   {report['examples']} ({report['input']})")
+
+    previous = None
+    if args.compare_report:
+        compare_path = repo_path(args.compare_report)
+        if not compare_path.is_file():
+            raise SystemExit(f"Comparison report not found: {compare_path}")
+        previous = json.loads(compare_path.read_text(encoding="utf-8"))
+
+    def show_metric(label, key, suffix="%", digits=2, scale=100):
+        current = float(report[key]) * scale
+        line = f"{label}: {current:.{digits}f}{suffix}"
+        if previous is not None and key in previous:
+            old = float(previous[key]) * scale
+            delta = current - old
+            direction = "improved" if delta > 1e-9 else "declined" if delta < -1e-9 else "unchanged"
+            delta_unit = " pp" if suffix == "%" else suffix
+            line += f" (vs prior {old:.{digits}f}{suffix}: {direction} {delta:+.{digits}f}{delta_unit})"
+        print(line)
+
+    show_metric("Token accuracy", "valid_token_accuracy")
+    exact = f"{report['exact_sequence_matches']}/{report['examples']}"
+    exact_line = f"Exact 64-token chunks: {exact} ({report['exact_sequence_match_rate'] * 100:.2f}%)"
+    if previous is not None and "exact_sequence_match_rate" in previous:
+        old = float(previous["exact_sequence_match_rate"]) * 100
+        delta = report["exact_sequence_match_rate"] * 100 - old
+        direction = "improved" if delta > 1e-9 else "declined" if delta < -1e-9 else "unchanged"
+        exact_line += f" (vs prior {old:.2f}%: {direction} {delta:+.2f} pp)"
+    print(exact_line)
+    show_metric("Mean character similarity", "mean_character_similarity")
+    if args.compile:
+        print(
+            f"Compile: originals {report['original_compile_passes']}/{report['examples']}; "
+            f"reconstructions {report['reconstruction_compile_passes']}/{report['examples']}"
+        )
+        failures = report["examples"] - report["reconstruction_compile_passes"]
+        if failures:
+            print(f"Still needs work: {failures} reconstructed snippets did not compile.")
+        else:
+            print("Compile gate: every reconstructed pilot snippet compiled.")
+    else:
+        print("Compile: not run; use --compile for the pilot syntax check.")
+    print(f"Detailed rows: {output_path}")
+    print(f"Full report:   {report_path}", flush=True)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,10 @@ This runs one generation shard per visible GPU, merges them, and prints ROUGE-1/
 
 This fork includes tokenizer and generator trainers. Their starter configs are intentionally small and are not expected to produce useful code. The training path has not yet been exercised on the Linux ROCm machine; follow [docs/TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md) for the data format, commands, math, checkpoints, and careful pilot sequence. See [docs/NCM_DATA_PATH.md](docs/NCM_DATA_PATH.md) for the implementation data path.
 
+### Human-readable experiment summaries
+
+Tokenizer training and the C# codec evaluation print a short terminal recap with selected checkpoints, validation metrics, compile pass rates, and remaining failures. Preserve the JSON reports for full detail. To compare a new codec run against an earlier report, pass `--compare-report <previous-report.json>` to `evaluation/godot_csharp_codec_eval.py`. Use `evaluation/inspect_codec_failures.py <reconstructions.jsonl>` to print code-level differences and compiler diagnostics for failed reconstructions.
+
 ## Citation
 
 ```bibtex

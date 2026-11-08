@@ -67,11 +67,12 @@ def main():
     best_tiebreak_value = -float("inf")
     best_checkpoint_path = None
     best_validation_step = None
+    best_validation_record = None
     last_util = None
 
     def validate(current_step):
         nonlocal best_selection_value, best_tiebreak_value
-        nonlocal best_checkpoint_path, best_validation_step
+        nonlocal best_checkpoint_path, best_validation_step, best_validation_record
         if val_loader is None:
             return
         if len(val_loader) == 0:
@@ -121,6 +122,7 @@ def main():
             best_selection_value = selected_value
             best_tiebreak_value = tie_value
             best_validation_step = current_step
+            best_validation_record = dict(record)
             best_checkpoint_path = run.checkpoint("best.pt", checkpoint_state(
                 model, optim, scaler, current_step - 1, cfg, "tokenizer",
                 {"best_validation_metric": selection_metric,
@@ -201,6 +203,23 @@ def main():
         "code": "NCM tokenizer reconstruction and VQ objective",
     })
     print(f"Training complete. Checkpoints: {run.path / 'checkpoints'}; artifact: {cfg.train.artifact_dir}", flush=True)
+    print("\n=== Human-readable tokenizer summary ===")
+    print(f"Updates completed: {max_steps}")
+    if best_validation_record is not None:
+        print(
+            f"Selected checkpoint: {artifact_checkpoint.name} at step {best_validation_step} "
+            f"({selection_metric}={best_selection_value:.4f})"
+        )
+        print(
+            f"Validation: token accuracy {best_validation_record['val_token_accuracy']:.2%}; "
+            f"exact chunks {best_validation_record['val_exact_sequence_match_rate']:.2%}; "
+            f"reconstruction CE {best_validation_record['val_recon_ce']:.4f}"
+        )
+        print("Next: run held-out codec evaluation and compile checks before generator training.")
+    else:
+        print(f"Selected checkpoint: {artifact_checkpoint.name} (no validation checkpoint was produced)")
+        print("Next: prepare validation data and run codec evaluation before generator training.")
+    print(f"Artifact: {Path(cfg.train.artifact_dir) / cfg.train.get('artifact_filename', 'tokenizer.pt')}", flush=True)
 
 
 if __name__ == "__main__":
