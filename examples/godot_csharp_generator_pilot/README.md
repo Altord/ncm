@@ -87,15 +87,20 @@ After it finishes, compare the code-only validation round trip with the mixed ba
 
 ```bash
 .venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --config config/train/godot-csharp-generator-pilot.yaml \
+  --checkpoint artifacts/godot-csharp-code-only/tokenizer.pt \
   --input data/mycode/godot-csharp-code-only/validation.jsonl \
   --text-key text --code-only \
   --output runs/godot-csharp-code-only/codec-validation/csharp.jsonl
 
 .venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --config config/train/godot-csharp-generator-pilot.yaml \
   --checkpoint artifacts/godot-csharp-code-only/tokenizer.pt \
   --compile \
   --output runs/godot-csharp-code-only/pilot-test/codec-compiled.jsonl
 ```
+
+For a direct validation comparison, run the same first command again with `--checkpoint artifacts/godot-csharp/tokenizer.pt` and a different output path. Both checkpoints use the same VQ-VAE architecture, so the generator-pilot config supplies the matching architecture while `--checkpoint` selects the weights being measured.
 
 This isolates documentation/data-mix effects. If the held-out code metrics barely move, the next ablation should change tokenizer capacity or objective—not simply add more generator steps.
 
