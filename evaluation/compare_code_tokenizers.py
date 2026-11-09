@@ -99,7 +99,10 @@ def main() -> None:
         "--input", default="examples/godot_csharp_generator_pilot/codec_compile_stress.jsonl",
     )
     parser.add_argument("--text-key", default="target")
-    parser.add_argument("--models", default="gpt2,microsoft/codebert-base,Salesforce/codet5-base",
+    parser.add_argument("--models", default=(
+                        "gpt2,microsoft/codebert-base,Salesforce/codet5-base,"
+                        "bigcode/starcoder2-3b,deepseek-ai/deepseek-coder-1.3b-base,"
+                        "Qwen/Qwen2.5-Coder-0.5B"),
                         help="Comma-separated Hugging Face tokenizer model IDs.")
     parser.add_argument("--sequence-length", type=int, default=64)
     parser.add_argument("--output", default="")

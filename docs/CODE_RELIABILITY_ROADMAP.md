@@ -24,7 +24,11 @@ This is still a syntax/type smoke benchmark, not a semantic test. It should be e
 
 ### Base-tokenizer comparison
 
-`evaluation/compare_code_tokenizers.py` compares GPT-2, CodeBERT, and CodeT5 tokenizers on the same snippets. It reports token counts, exact text round-trip, 64-token overflow, and pieces per identifier-like span. A follow-up Qwen2.5-Coder tokenizer diagnostic found substantially fewer tokens and identifier-like pieces on the strict validation corpus, so `config/train/godot-csharp-qwen-strict-32level-tokenizer.yaml` prepares a matched 32-level codec ablation. The Qwen corpus must be rebuilt with Qwen tokenization; never reuse GPT-2 token caches. Qwen's larger vocabulary means increased VQ-VAE vocabulary embeddings/output compute, so start with a short pilot and check peak VRAM and throughput before committing to a 40-epoch run.
+`evaluation/compare_code_tokenizers.py` compares tokenizer-only behavior for GPT-2, CodeBERT, CodeT5, StarCoder2, DeepSeek Coder, and Qwen2.5-Coder. This is a screening test only: token count and identifier splits do not establish NCM codec quality. GPT-2 remains the baseline; Qwen2.5-Coder is the smaller-token-count candidate, StarCoder2 is code-focused with a 49,152-token vocabulary close to GPT-2's 50,257-token base vocabulary, and DeepSeek Coder adds a smaller 32,256-token-vocabulary candidate. The matched 32-level StarCoder2 ablation is configured in `config/train/godot-csharp-starcoder2-strict-32level-tokenizer.yaml`. Promote DeepSeek to full NCM training only if the screening metrics justify that extra run.
+
+For a fair codec comparison, keep model architecture, 32 quantizer levels, 256 codes per level, optimizer, steps, seed, sequence length, file-level train/validation split, and source files fixed. Rebuild each corpus with the candidate tokenizer: token IDs and chunk boundaries are tokenizer-specific. Compare the resulting codecs on equivalent held-out source files and the same 48-method compile suite. Token accuracy is tokenizer-specific and is not directly comparable across tokenizers; emphasize exact decoded text/chunks, character edit similarity, original-versus-reconstruction compile counts, peak VRAM, throughput, and encoded NCM codes per source character. Do not finalize a tokenizer based on a lower token count alone.
+
+The Qwen corpus must be rebuilt with Qwen tokenization; never reuse GPT-2 token caches. Qwen's much larger vocabulary (151,936 entries for this configured tokenizer) increases VQ-VAE embedding/output compute, so begin with a short pilot and check peak VRAM and throughput before committing to a full run. StarCoder2's published vocabulary is 49,152; the custom pad token adds one entry in this config.
 
 Build a separate file-held-out corpus for that experiment. The GPT-2 validation rows cannot be reused as Qwen rows because the chunk boundaries were made with a different tokenizer:
 
@@ -46,6 +50,28 @@ Build a separate file-held-out corpus for that experiment. The GPT-2 validation 
   --stage tokenizer \
   --input data/mycode/godot-csharp-qwen-strict/validation.jsonl \
   --cache-dir data/cache/godot-csharp-qwen-strict/tokenizer-validation
+```
+
+Prepare the StarCoder2 candidate the same way, keeping a separate corpus and cache:
+
+```bash
+.venv/bin/python -m training.build_reference_corpus \
+  --root data/reference \
+  --output data/mycode/godot-csharp-starcoder2-strict \
+  --tokenizer bigcode/starcoder2-3b \
+  --sequence-length 64 \
+  --max-doc-fraction 0 \
+  --include-extensions .cs,.csproj
+
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-starcoder2-strict-32level-tokenizer.yaml \
+  --stage tokenizer
+
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-starcoder2-strict-32level-tokenizer.yaml \
+  --stage tokenizer \
+  --input data/mycode/godot-csharp-starcoder2-strict/validation.jsonl \
+  --cache-dir data/cache/godot-csharp-starcoder2-strict/tokenizer-validation
 ```
 
 ## Decision after 64 levels
