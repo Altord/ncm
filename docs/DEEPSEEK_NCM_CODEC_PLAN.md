@@ -75,11 +75,15 @@ Use its best saved artifact, held-out file split, and the same 48 stress snippet
 
 The experiment config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-8level-decoder4-syntax-weighted-40pass.yaml`. It holds the tokenizer, 8-level schedule, decoder depth (4), corpus, optimizer, and training duration fixed against the decoder-4 result. The only intended change is the loss weighting. Compare its held-out reconstruction and compile-stress metrics against the decoder-4 result above. If syntax errors decline but identifiers remain damaged, revise the lexical objective based on diagnostics; if weighted loss does not help compilation, do not promote it to the 64-level run as a proven fix.
 
+The 20-update smoke run completed and reached validation, confirming the weighted-loss path initializes and trains. Its reported 0% token accuracy is expected at this deliberately tiny step count and is not a quality result.
+
 ### Step 4 — train and evaluate the selected 64-level configuration
 
 The selected final codec target remains DeepSeek Coder 1.3B + 64 levels. Use the decoder depth selected by Step 3. Start from `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-40pass.yaml`, changing `dec_layers` only if the Step 3 result supports it. Keep the same corpus, 64-token context, optimizer, and 40-pass schedule.
 
 Compare its held-out reconstruction and 48-snippet compile metrics against the fixed 8-level baselines. This tests the level-count change after the decoder-capacity question has been addressed.
+
+**Requested combined run:** `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-decoder8-syntax-weighted-128k.yaml` sets DeepSeek Coder 1.3B, 64 quantizer levels, 8 decoder blocks, syntax/identifier loss weights of 3.0/1.5, and 128,000 updates. This deliberately combines several changes, so any gain cannot be attributed to a single component. Its metrics are exploratory; follow with matched ablations if it improves.
 
 ### Step 5 — respond to remaining failures without reopening tokenizer selection
 
