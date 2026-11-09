@@ -100,9 +100,13 @@ def main() -> None:
     )
     parser.add_argument("--text-key", default="target")
     parser.add_argument("--models", default=(
-                        "gpt2,microsoft/codebert-base,Salesforce/codet5-base,"
-                        "bigcode/starcoder2-3b,deepseek-ai/deepseek-coder-1.3b-base,"
-                        "Qwen/Qwen2.5-Coder-0.5B"),
+                        "Qwen/Qwen2.5-Coder-0.5B,gpt2,microsoft/codebert-base,"
+                        "Salesforce/codet5-base,bigcode/starcoder2-3b,"
+                        "deepseek-ai/deepseek-coder-1.3b-base,"
+                        "deepseek-ai/DeepSeek-Coder-V2-Base,"
+                        "Qwen/Qwen3-Coder-30B-A3B-Instruct,"
+                        "ibm-granite/granite-8b-code-base-4k,"
+                        "google/codegemma-7b,meta-llama/CodeLlama-7b-hf"),
                         help="Comma-separated Hugging Face tokenizer model IDs.")
     parser.add_argument("--sequence-length", type=int, default=64)
     parser.add_argument("--output", default="")
@@ -150,6 +154,8 @@ def main() -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(rendered + "\n", encoding="utf-8")
     print("\n=== Tokenizer comparison ===")
+    baseline = next((row for row in results if row.get("model_id") == "Qwen/Qwen2.5-Coder-0.5B"
+                     and row.get("status") == "ok"), None)
     for result in results:
         if result.get("status") != "ok":
             print(f"{result['model_id']}: unavailable ({result['error_type']}: {result['error']})")
@@ -160,6 +166,15 @@ def main() -> None:
             f"exact text round-trip={result['exact_text_roundtrips']}/{result['examples']}, "
             f"identifier-like spans={result['mean_pieces_per_identifier_like_span']:.2f} pieces/span"
         )
+        if baseline and result is not baseline:
+            base_tokens = baseline["mean_tokens_per_example"]
+            token_delta_pct = 100.0 * (result["mean_tokens_per_example"] - base_tokens) / max(base_tokens, 1e-12)
+            base_identifiers = baseline["mean_pieces_per_identifier_like_span"]
+            identifier_delta_pct = 100.0 * (
+                result["mean_pieces_per_identifier_like_span"] - base_identifiers
+            ) / max(base_identifiers, 1e-12)
+            print(f"  vs Qwen2.5: tokens {token_delta_pct:+.1f}%, "
+                  f"identifier pieces/span {identifier_delta_pct:+.1f}%")
     if args.output:
         print(f"Report: {output_path}")
 

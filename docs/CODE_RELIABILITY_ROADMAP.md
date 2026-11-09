@@ -24,7 +24,19 @@ This is still a syntax/type smoke benchmark, not a semantic test. It should be e
 
 ### Base-tokenizer comparison
 
-`evaluation/compare_code_tokenizers.py` compares tokenizer-only behavior for GPT-2, CodeBERT, CodeT5, StarCoder2, DeepSeek Coder, and Qwen2.5-Coder. This is a screening test only: token count and identifier splits do not establish NCM codec quality. GPT-2 remains the baseline; Qwen2.5-Coder is the smaller-token-count candidate, StarCoder2 is code-focused with a 49,152-token vocabulary close to GPT-2's 50,257-token base vocabulary, and DeepSeek Coder adds a smaller 32,256-token-vocabulary candidate. The matched 32-level StarCoder2 ablation is configured in `config/train/godot-csharp-starcoder2-strict-32level-tokenizer.yaml`. Promote DeepSeek to full NCM training only if the screening metrics justify that extra run.
+`evaluation/compare_code_tokenizers.py` screens tokenizer-only behavior against Qwen2.5-Coder on the same held-out GPT-2 chunks. The current candidate list covers GPT-2, CodeBERT, CodeT5, StarCoder2, DeepSeek Coder and Coder V2, Qwen3-Coder, Granite Code, CodeGemma, and CodeLlama. This is only a screening test: token count and identifier splits do not establish NCM codec quality. Several candidates may need newer Transformers, HF login, or model access; the script records an individual load failure and continues. Qwen2.5 remains the known baseline. StarCoder2's 49,152-token vocabulary is close to GPT-2's 50,257-token base vocabulary, DeepSeek Coder 1.3B has 32,256 entries, DeepSeek Coder V2 has 102,400, and Qwen3-Coder has 151,936. A matched 32-level StarCoder2 ablation is configured in `config/train/godot-csharp-starcoder2-strict-32level-tokenizer.yaml`. Promote other candidates to NCM training only after the quick screen shows a plausible advantage.
+
+Run the quick screen during the existing 64-level GPU training if desired; it uses tokenizer inference on CPU and does not start training or allocate GPU memory. It downloads tokenizer files from Hugging Face as needed. The input is the same fixed set of held-out text chunks, so the first-pass token counts and string round-trip results are directly comparable:
+
+```bash
+.venv/bin/python evaluation/compare_code_tokenizers.py \
+  --input data/mycode/godot-csharp-strict/validation.jsonl \
+  --text-key text \
+  --sequence-length 64 \
+  --output runs/tokenizer-comparison/qwen-baseline-expanded.json
+```
+
+This diagnostic uses the existing GPT-2 chunk boundaries. Its `over-64` column is a screening signal, not a codec result. Each finalist must later be retokenized and rechunked from the same source files before its NCM codec is trained.
 
 For a fair codec comparison, keep model architecture, 32 quantizer levels, 256 codes per level, optimizer, steps, seed, sequence length, file-level train/validation split, and source files fixed. Rebuild each corpus with the candidate tokenizer: token IDs and chunk boundaries are tokenizer-specific. Compare the resulting codecs on equivalent held-out source files and the same 48-method compile suite. Token accuracy is tokenizer-specific and is not directly comparable across tokenizers; emphasize exact decoded text/chunks, character edit similarity, original-versus-reconstruction compile counts, peak VRAM, throughput, and encoded NCM codes per source character. Do not finalize a tokenizer based on a lower token count alone.
 
