@@ -48,7 +48,9 @@ vqvae:
         min_keep: 1
     levels:
       use_manual_levels: true
-      manual_levels: [1, 2, 3, 4, 5, 6, 7, 8]
+      # These are latent sequence resolutions, not level indices. The final
+      # resolution must match the 64-token input context.
+      manual_levels: [1, 2, 4, 8, 16, 32, 48, 64]
 
 train:
   seed: 42
