@@ -1,5 +1,7 @@
 # NCM coding reliability roadmap
 
+> **Plan superseded for the active DeepSeek codec work:** follow [DEEPSEEK_NCM_CODEC_PLAN.md](DEEPSEEK_NCM_CODEC_PLAN.md). This file preserves the earlier GPT-2/tokenizer-comparison experiments as historical context; its old “current state” and next-step recommendations should not override the newer plan.
+
 ## Current state
 
 The active task is the frozen VQ-VAE codec, not the code generator. The strict C# corpus has 23,566 training chunks and 2,263 file-held-out validation chunks at 64 GPT-2 tokens each. All metrics below describe codec reconstruction only.
