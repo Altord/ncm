@@ -38,7 +38,7 @@ Run the quick screen during the existing 64-level GPU training if desired; it us
 
 This diagnostic uses the existing GPT-2 chunk boundaries. Its `over-64` column is a screening signal, not a codec result. Each finalist must later be retokenized and rechunked from the same source files before its NCM codec is trained.
 
-The expanded screening results show Qwen2.5-Coder at 30.6 tokens per GPT-2 validation chunk. Qwen3-Coder produced the identical token IDs on every comparison sample, so it does not need a separate codec run. StarCoder2 and Granite Code both averaged 33.3 tokens and have near-identical identifier metrics; the report's `sample_token_ids_sha256` (also printed as duplicate groups) tells whether they are exact duplicates on this suite. DeepSeek Coder V2 averaged 37.3 and DeepSeek Coder 1.3B averaged 40.1, so neither beats Qwen on token count. They remain useful as low-vocabulary codec tradeoff candidates, because the VQ-VAE must predict among fewer output token classes. This is a compute/quality hypothesis, not evidence that their codec will be better.
+The expanded screening results show Qwen2.5-Coder at 30.6 tokens per GPT-2 validation chunk. Qwen3-Coder produced the identical token IDs on every comparison sample, so it does not need a separate codec run. StarCoder2 and Granite Code both averaged 33.3 tokens and have near-identical identifier metrics, but their token-ID fingerprints differ, so keep both as distinct codec candidates. DeepSeek Coder V2 averaged 37.3 and DeepSeek Coder 1.3B averaged 40.1, so neither beats Qwen on token count. They remain useful as low-vocabulary codec tradeoff candidates, because the VQ-VAE must predict among fewer output token classes. This is a compute/quality hypothesis, not evidence that their codec will be better.
 
 For a fair codec comparison, keep model architecture, 32 quantizer levels, 256 codes per level, optimizer, steps, seed, sequence length, file-level train/validation split, and source files fixed. Rebuild each corpus with the candidate tokenizer: token IDs and chunk boundaries are tokenizer-specific. Compare the resulting codecs on equivalent held-out source files and the same 48-method compile suite. Token accuracy is tokenizer-specific and is not directly comparable across tokenizers; emphasize exact decoded text/chunks, character edit similarity, original-versus-reconstruction compile counts, peak VRAM, throughput, and encoded NCM codes per source character. Do not finalize a tokenizer based on a lower token count alone.
 
@@ -116,9 +116,22 @@ Two additional low-vocabulary codec candidates are configured for the same 32-le
   --config config/train/godot-csharp-deepseek-coder-v2-strict-32level-tokenizer.yaml \
   --stage tokenizer --input data/mycode/godot-csharp-deepseek-coder-v2-strict/validation.jsonl \
   --cache-dir data/cache/godot-csharp-deepseek-coder-v2-strict/tokenizer-validation
+
+# IBM Granite Code tokenizer (distinct token IDs from StarCoder2 on the screen)
+.venv/bin/python -m training.build_reference_corpus \
+  --root data/reference \
+  --output data/mycode/godot-csharp-granite-code-strict \
+  --tokenizer ibm-granite/granite-8b-code-base-4k \
+  --sequence-length 64 --max-doc-fraction 0 --include-extensions .cs,.csproj
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-granite-code-strict-32level-tokenizer.yaml --stage tokenizer
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-granite-code-strict-32level-tokenizer.yaml \
+  --stage tokenizer --input data/mycode/godot-csharp-granite-code-strict/validation.jsonl \
+  --cache-dir data/cache/godot-csharp-granite-code-strict/tokenizer-validation
 ```
 
-The full codec comparison should train the Qwen2.5 baseline and each distinct tokenizer candidate for the same number of source-corpus passes. Compute each candidate's step count as `ceil(train_rows / 16) * epochs` because tokenizer-specific chunk counts differ. Run the candidates sequentially after the current GPU job finishes. Evaluate their best checkpoints on each candidate's own held-out chunks and the same compile stress suite. Use decoded text/compile results and cost per source character as the cross-tokenizer outcomes; token accuracy values are only comparable within one tokenizer.
+The full codec comparison should train the Qwen2.5 baseline plus StarCoder2, Granite Code, DeepSeek Coder 1.3B, and DeepSeek Coder V2. Qwen3-Coder is excluded because it duplicates Qwen2.5 token IDs on this suite; GPT-2 and CodeBERT tokenize much less efficiently, CodeT5 does not load with the current tokenizer stack, and CodeGemma/CodeLlama require gated HF access. Give each candidate the same number of source-corpus passes. Compute each candidate's step count as `ceil(train_rows / 16) * epochs` because tokenizer-specific chunk counts differ. Run the candidates sequentially after the current GPU job finishes. Evaluate their best checkpoints on each candidate's own held-out chunks and the same compile stress suite. Use decoded text/compile results and cost per source character as the cross-tokenizer outcomes; token accuracy values are only comparable within one tokenizer.
 
 ## Decision after 64 levels
 
