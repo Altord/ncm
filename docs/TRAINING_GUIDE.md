@@ -57,6 +57,8 @@ For Godot/C# tokenizer configs, checkpoint selection uses held-out token accurac
 
 `config/train/godot-csharp-strict-32level-1024code-tokenizer.yaml` tests codebook capacity at the 32-level setting. Relative to `godot-csharp-strict-32level-tokenizer.yaml`, it changes only each level's codebook size from 256 to 1024. This is motivated by the training log showing all 256 codes used at 31 of 32 levels. Compare held-out reconstruction and pilot compile results; codebook utilization alone is not an accuracy measure.
 
+`config/train/godot-csharp-strict-64level-tokenizer.yaml` is a final level-count stress test. It keeps the 256-entry codebooks and the 32-level training recipe, but uses every resolution from 1 through 64. This substantially increases codec/generator work; keep it only if exact reconstruction or compileability improves enough to justify the additional per-level generation steps.
+
 `config/train/godot-csharp-strict-32level-tokenizer.yaml` extends the same ablation to 32 levels. It has substantially more code positions per chunk (942 versus 396 at 16 levels), so expect more quantization and generator work. Keep the same 40-epoch exposure and compare held-out reconstruction and pilot compilation; stop increasing levels if code accuracy gains flatten or compilation remains unchanged.
 
 ### 3.2 Generator stage
