@@ -71,21 +71,27 @@ def estimate_rate(rows: list[dict]) -> tuple[float | None, float | None]:
     return 1.0 / seconds_per_step, seconds_per_step
 
 
-def inspect(root: Path, name: str, now: float) -> Run:
-    data = root / "data" / "mycode" / f"godot-csharp-{name}-strict" / "train.jsonl"
-    rows_count = count_rows(data)
-    target = ((rows_count + BATCH_SIZE - 1) // BATCH_SIZE) * PASSES if rows_count else 0
-
-    run_dir = root / "runs" / "codec-tokenizer-screen" / name / "8level"
+def inspect(root: Path, name: str, now: float, run_dir: Path | None = None,
+            target: int | None = None) -> Run:
+    if run_dir is None:
+        data = root / "data" / "mycode" / f"godot-csharp-{name}-strict" / "train.jsonl"
+        rows_count = count_rows(data)
+        target = ((rows_count + BATCH_SIZE - 1) // BATCH_SIZE) * PASSES if rows_count else 0
+        run_dir = root / "runs" / "codec-tokenizer-screen" / name / "8level"
+    else:
+        run_dir = run_dir if run_dir.is_absolute() else root / run_dir
     log_path = run_dir / "logs" / "train.jsonl"
-    final_path = root / "artifacts" / "codec-tokenizer-screen" / name / "8level" / "tokenizer.pt"
+    final_path = run_dir / "artifacts" / "tokenizer.pt"
     rows = read_log(log_path)
     step = int(rows[-1]["step"]) if rows else 0
     rate, seconds_per_step = estimate_rate(rows)
     timed_rows = [row for row in rows if isinstance(row.get("time_unix"), (int, float))]
     elapsed = max(0.0, now - float(timed_rows[0]["time_unix"])) if timed_rows else None
 
-    if final_path.is_file() or (run_dir / "checkpoints" / "final.pt").is_file():
+    final_checkpoint = run_dir / "checkpoints" / "final.pt"
+    if ((target and step >= target) or
+            (final_path.is_file() and (not log_path.exists() or final_path.stat().st_mtime >= log_path.stat().st_mtime)) or
+            (final_checkpoint.is_file() and (not log_path.exists() or final_checkpoint.stat().st_mtime >= log_path.stat().st_mtime))):
         status = "done"
         step = target or step
     elif not rows:
@@ -112,9 +118,11 @@ def format_duration(seconds: float | None) -> str:
     return f"{seconds}s"
 
 
-def render(root: Path) -> str:
+def render(root: Path, custom_runs: list[tuple[str, Path, int]] | None = None) -> str:
     now = time.time()
-    runs = [inspect(root, name, now) for name in CANDIDATES]
+    runs = ([inspect(root, name, now, path, target)
+             for name, path, target in custom_runs]
+            if custom_runs else [inspect(root, name, now) for name in CANDIDATES])
     total_target = sum(run.target for run in runs)
     total_done = sum(run.target if run.status == "done" else min(run.step, run.target)
                      for run in runs)
@@ -135,7 +143,7 @@ def render(root: Path) -> str:
 
     width = 22
     lines = [
-        "NCM tokenizer codec screen — 8 levels, 3 passes per candidate",
+        "NCM training progress — live read-only log monitor",
         f"Overall step progress: {total_done:,}/{total_target:,} ({overall_pct:.1f}%)",
         f"Rough time remaining: {format_duration(total_eta)} "
         "(extrapolated from observed candidate speeds)",
@@ -156,8 +164,7 @@ def render(root: Path) -> str:
         )
     lines += [
         "",
-        "Log files: runs/codec-tokenizer-screen/<candidate>/8level/logs/train.jsonl",
-        "Overall percent is update-count weighted; ETA is approximate because vocab sizes differ.",
+        "Log files are read only. ETA uses recent logged speed and is approximate.",
     ]
     return "\n".join(lines)
 
@@ -169,11 +176,26 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=5.0,
                         help="Refresh interval in seconds")
     parser.add_argument("--once", action="store_true", help="Print one snapshot and exit")
+    parser.add_argument(
+        "--run", action="append", default=[], metavar="NAME=RUN_DIR:TARGET_STEPS",
+        help="Monitor any run; repeat for multiple runs. RUN_DIR contains logs/train.jsonl.",
+    )
     args = parser.parse_args()
     root = args.root.resolve()
+    custom_runs = []
+    for item in args.run:
+        try:
+            name, run_spec = item.split("=", 1)
+            run_path, target_text = run_spec.rsplit(":", 1)
+            target = int(target_text)
+            if not name or not run_path or target <= 0:
+                raise ValueError
+        except ValueError as exc:
+            parser.error(f"invalid --run {item!r}; use NAME=RUN_DIR:TARGET_STEPS")
+        custom_runs.append((name, Path(run_path), target))
 
     while True:
-        output = render(root)
+        output = render(root, custom_runs or None)
         if args.once:
             print(output, flush=True)
             return
