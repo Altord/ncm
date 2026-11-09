@@ -44,6 +44,37 @@ To compile the six original pilot targets and their tokenizer reconstructions as
 
 The report counts original-target and reconstruction compile passes separately. Compilation checks syntax/type compatibility with the evaluator's minimal `Vector2` stub; it does not execute the code or test the Godot engine.
 
+## Expanded tokenizer compile suite
+
+`codec_compile_stress.jsonl` contains 48 original, self-contained C# methods covering arithmetic, guards, timers, arrays, strings, and the evaluator's `Vector2` stub. It is separate from generator train/validation/test data. The original methods were compiled together against the same .NET 8 and `Vector2` stub contract; they all compile. Use this larger set to measure whether codec reconstructions compile, not whether generated implementations are semantically correct.
+
+Run it with each tokenizer checkpoint:
+
+```bash
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --config /tmp/godot-csharp-strict-64level-40epoch.yaml \
+  --checkpoint artifacts/godot-csharp-strict/64level-40epoch/tokenizer.pt \
+  --input examples/godot_csharp_generator_pilot/codec_compile_stress.jsonl \
+  --text-key target \
+  --compile \
+  --output runs/godot-csharp-strict/64level-tokenizer-40epoch/compile-stress/results.jsonl
+```
+
+Check `original_compile_passes` first; a valid comparison requires all originals to pass. Then compare reconstruction compile passes, exact chunks, and token accuracy across checkpoints. The suite deliberately remains held out and must not be added to tokenizer or generator training.
+
+## Compare code tokenizer candidates
+
+Before changing the base tokenizer, compare token counts, exact text round-trips, context overflow, and how many subword pieces identifier-like strings use:
+
+```bash
+.venv/bin/python evaluation/compare_code_tokenizers.py \
+  --input examples/godot_csharp_generator_pilot/codec_compile_stress.jsonl \
+  --text-key target \
+  --output runs/tokenizer-comparison/codec-stress.json
+```
+
+The default comparison is GPT-2, CodeBERT, and CodeT5. These are tokenizer diagnostics only: a candidate must be trained with a matching VQ-VAE and then evaluated on the same held-out exact-reconstruction and compile suite before we select it.
+
 ## Controlled next tokenizer experiment: code-only data mix
 
 The current mixed corpus has 75% code chunks and 25% documentation chunks. To test whether the prose share is hurting code reconstruction, build a corpus with documentation excluded and use the separate config below. “Code-only” here includes C# source, project files, Godot scenes/resources, and shader files from the existing source manifest; it does not mean C# files alone. The VQ-VAE, seed, optimizer, context length, and quantization levels stay matched to the baseline; only the data mix and run/output paths change.

@@ -1,0 +1,48 @@
+{"id":"safe_wrap_negative","source":"codec_compile_stress.cs","target":"static int WrapIndex(int index, int count) => count <= 0 ? 0 : ((index % count) + count) % count;"}
+{"id":"safe_clamp_int","source":"codec_compile_stress.cs","target":"static int ClampHealth(int value, int maximum) => Math.Clamp(value, 0, Math.Max(0, maximum));"}
+{"id":"safe_clamp_float","source":"codec_compile_stress.cs","target":"static float ClampUnit(float value) => Math.Clamp(value, 0f, 1f);"}
+{"id":"spend_cost","source":"codec_compile_stress.cs","target":"static bool TrySpend(int balance, int cost, out int remaining) { remaining = balance; if (cost < 0 || balance < cost) return false; remaining = balance - cost; return true; }"}
+{"id":"take_damage","source":"codec_compile_stress.cs","target":"static int ApplyDamage(int health, int damage) => Math.Max(0, health - Math.Max(0, damage));"}
+{"id":"armor_damage","source":"codec_compile_stress.cs","target":"static int DamageAfterArmor(int health, int damage, int armor) => Math.Max(0, health - Math.Max(0, damage - Math.Max(0, armor)));"}
+{"id":"multiply_score","source":"codec_compile_stress.cs","target":"static int MultiplyScore(int score, int multiplier) => Math.Max(0, score) * Math.Max(0, multiplier);"}
+{"id":"add_score_saturating","source":"codec_compile_stress.cs","target":"static int AddScore(int score, int points) => (int)Math.Clamp((long)score + points, 0, int.MaxValue);"}
+{"id":"tick_timer","source":"codec_compile_stress.cs","target":"static float TickTimer(float timer, float delta) => Math.Max(0f, timer - Math.Max(0f, delta));"}
+{"id":"cooldown_ready","source":"codec_compile_stress.cs","target":"static bool IsCooldownReady(float timer) => timer <= 0f;"}
+{"id":"timer_expired","source":"codec_compile_stress.cs","target":"static bool HasExpired(float timer, float epsilon) => timer <= Math.Max(0f, epsilon);"}
+{"id":"safe_move_direction","source":"codec_compile_stress.cs","target":"static Vector2 SafeMoveInput(Vector2 input) => input.LengthSquared() > 1f ? input.Normalized() : input;"}
+{"id":"vector_near","source":"codec_compile_stress.cs","target":"static bool IsNear(Vector2 a, Vector2 b, float radius) => a.DistanceSquaredTo(b) <= radius * radius;"}
+{"id":"move_toward","source":"codec_compile_stress.cs","target":"static Vector2 MoveStep(Vector2 current, Vector2 target, float delta) => current.MoveToward(target, Math.Max(0f, delta));"}
+{"id":"vector_inside","source":"codec_compile_stress.cs","target":"static bool IsInside(Vector2 p, Vector2 min, Vector2 max) => p.X >= min.X && p.X <= max.X && p.Y >= min.Y && p.Y <= max.Y;"}
+{"id":"vector_outside","source":"codec_compile_stress.cs","target":"static bool IsOutside(Vector2 p, Vector2 min, Vector2 max) => p.X < min.X || p.X > max.X || p.Y < min.Y || p.Y > max.Y;"}
+{"id":"nonzero_direction","source":"codec_compile_stress.cs","target":"static Vector2 NormalizeOrZero(Vector2 value) => value.LengthSquared() > 0.0001f ? value.Normalized() : new Vector2(0f, 0f);"}
+{"id":"score_threshold","source":"codec_compile_stress.cs","target":"static bool ReachedTarget(int score, int target) => target > 0 && score >= target;"}
+{"id":"health_fraction","source":"codec_compile_stress.cs","target":"static float HealthRatio(int health, int maximum) => maximum <= 0 ? 0f : Math.Clamp((float)health / maximum, 0f, 1f);"}
+{"id":"safe_divide","source":"codec_compile_stress.cs","target":"static bool TryDivide(float numerator, float denominator, out float result) { result = 0f; if (Math.Abs(denominator) < 0.000001f) return false; result = numerator / denominator; return true; }"}
+{"id":"safe_array_value","source":"codec_compile_stress.cs","target":"static int ValueAt(int[] values, int index) => values == null || index < 0 || index >= values.Length ? 0 : values[index];"}
+{"id":"find_first_positive","source":"codec_compile_stress.cs","target":"static int FirstPositive(int[] values) { if (values == null) return -1; for (int i = 0; i < values.Length; i++) if (values[i] > 0) return i; return -1; }"}
+{"id":"contains_integer","source":"codec_compile_stress.cs","target":"static bool Contains(int[] values, int target) { if (values == null) return false; foreach (int value in values) if (value == target) return true; return false; }"}
+{"id":"count_positive","source":"codec_compile_stress.cs","target":"static int CountPositive(int[] values) { int count = 0; if (values == null) return count; foreach (int value in values) if (value > 0) count++; return count; }"}
+{"id":"safe_parse","source":"codec_compile_stress.cs","target":"static bool TryParseNonNegative(string text, out int value) => int.TryParse(text, out value) && value >= 0;"}
+{"id":"bounded_parse","source":"codec_compile_stress.cs","target":"static int ParseBounded(string text, int fallback, int maximum) => int.TryParse(text, out int value) ? Math.Clamp(value, 0, Math.Max(0, maximum)) : fallback;"}
+{"id":"choose_direction","source":"codec_compile_stress.cs","target":"static int SignOrZero(float value, float epsilon) => value > epsilon ? 1 : value < -epsilon ? -1 : 0;"}
+{"id":"wrap_next","source":"codec_compile_stress.cs","target":"static int NextIndex(int index, int count) => count <= 0 ? -1 : (index + 1) % count;"}
+{"id":"wrap_previous","source":"codec_compile_stress.cs","target":"static int PreviousIndex(int index, int count) => count <= 0 ? -1 : ((index - 1) % count + count) % count;"}
+{"id":"is_even","source":"codec_compile_stress.cs","target":"static bool IsEven(int value) => value % 2 == 0;"}
+{"id":"is_power_of_two","source":"codec_compile_stress.cs","target":"static bool IsPowerOfTwo(int value) => value > 0 && (value & (value - 1)) == 0;"}
+{"id":"safe_percent","source":"codec_compile_stress.cs","target":"static int Percent(int current, int total) => total <= 0 ? 0 : (int)Math.Clamp((long)current * 100 / total, 0, 100);"}
+{"id":"lerp_clamped","source":"codec_compile_stress.cs","target":"static float LerpClamped(float from, float to, float amount) => from + (to - from) * Math.Clamp(amount, 0f, 1f);"}
+{"id":"approach_zero","source":"codec_compile_stress.cs","target":"static float MoveTowardZero(float value, float step) => Math.Abs(value) <= step ? 0f : value - MathF.Sign(value) * step;"}
+{"id":"positive_delta","source":"codec_compile_stress.cs","target":"static float PositiveDelta(float delta) => float.IsFinite(delta) ? Math.Max(0f, delta) : 0f;"}
+{"id":"finite_or_zero","source":"codec_compile_stress.cs","target":"static float FiniteOrZero(float value) => float.IsFinite(value) ? value : 0f;"}
+{"id":"string_equal_ignore_case","source":"codec_compile_stress.cs","target":"static bool SameName(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);"}
+{"id":"trim_or_empty","source":"codec_compile_stress.cs","target":"static string NormalizeName(string value) => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();"}
+{"id":"safe_substring","source":"codec_compile_stress.cs","target":"static string Prefix(string value, int length) => string.IsNullOrEmpty(value) || length <= 0 ? string.Empty : value.Substring(0, Math.Min(value.Length, length));"}
+{"id":"nullable_label","source":"codec_compile_stress.cs","target":"static string LabelOrDefault(string label, string fallback) => string.IsNullOrWhiteSpace(label) ? fallback ?? string.Empty : label;"}
+{"id":"clamp_index","source":"codec_compile_stress.cs","target":"static int ClampIndex(int index, int count) => count <= 0 ? -1 : Math.Clamp(index, 0, count - 1);"}
+{"id":"try_consume","source":"codec_compile_stress.cs","target":"static bool TryConsume(ref int quantity, int amount) { if (amount < 0 || quantity < amount) return false; quantity -= amount; return true; }"}
+{"id":"min_positive","source":"codec_compile_stress.cs","target":"static int MinPositive(int a, int b) => a <= 0 ? Math.Max(0, b) : b <= 0 ? a : Math.Min(a, b);"}
+{"id":"max_nonnegative","source":"codec_compile_stress.cs","target":"static int MaxNonNegative(int a, int b) => Math.Max(0, Math.Max(a, b));"}
+{"id":"is_valid_range","source":"codec_compile_stress.cs","target":"static bool IsValidRange(int start, int length, int total) => start >= 0 && length >= 0 && start <= total && length <= total - start;"}
+{"id":"safe_midpoint","source":"codec_compile_stress.cs","target":"static int Midpoint(int a, int b) => (int)(((long)a + b) / 2);"}
+{"id":"select_nonzero","source":"codec_compile_stress.cs","target":"static int PreferNonZero(int primary, int fallback) => primary != 0 ? primary : fallback;"}
+{"id":"try_get_last","source":"codec_compile_stress.cs","target":"static bool TryGetLast(int[] values, out int value) { value = 0; if (values == null || values.Length == 0) return false; value = values[values.Length - 1]; return true; }"}

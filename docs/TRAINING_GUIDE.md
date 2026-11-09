@@ -4,7 +4,7 @@
 
 **Repository status checked 2026-11-06:** This checkout includes tokenizer and generator training entry points, JSONL-to-memory-map preparation, validation, resumable checkpoints, and starter configs. These have been reviewed against this checkout's model interfaces but have not yet been run on the Linux ROCm machine. The configs are tiny mechanics baselines and do not establish code quality.
 
-For tensor-level details, read [NCM_DATA_PATH.md](NCM_DATA_PATH.md). For the overall game-generation project, see [../GAME_GENERATION_PLAN.md](../GAME_GENERATION_PLAN.md).
+For tensor-level details, read [NCM_DATA_PATH.md](NCM_DATA_PATH.md). For the overall game-generation project, see [../GAME_GENERATION_PLAN.md](../GAME_GENERATION_PLAN.md). For the codec-to-compiler decision sequence, see [CODE_RELIABILITY_ROADMAP.md](CODE_RELIABILITY_ROADMAP.md).
 
 ## 1. What training creates
 

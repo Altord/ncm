@@ -14,7 +14,15 @@
     "train_records": 16,
     "validation_records": 4,
     "test_records": 6,
-    "full_game_eval_briefs": 3
+    "full_game_eval_briefs": 3,
+    "codec_compile_stress_records": 48
+  },
+  "codec_compile_stress": {
+    "file": "codec_compile_stress.jsonl",
+    "purpose": "Held-out codec reconstruction and compile checks on complete self-contained C# methods",
+    "originals_compile_under": ".NET 8 and the evaluator's minimal Godot.Vector2 stub",
+    "generated_code_executed": false,
+    "included_in_generator_training": false
   },
   "limitations": [
     "Tiny synthetic smoke set; not a capable code-training corpus.",
