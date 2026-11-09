@@ -57,6 +57,8 @@ Run once after syncing `data/reference` on the Linux PC:
 
 Inspect the generated manifest and counts before starting the 128,000-update run. The builder's file-level split hashes source paths, so train and validation remain disjoint when only the chunk length changes.
 
+**Corpus build result:** 9,103 training chunks from 1,764 source files and 803 validation chunks from 209 held-out files; no documentation chunks. At batch size 16 this is 569 optimizer steps per pass, so 128,000 updates are approximately 225 passes. The Transformers warning about a 244,413-token input was emitted while the corpus builder tokenized one long source file before chunking it; corpus creation and fixed-length cache preparation both completed successfully. Each model example is still truncated/padded to the configured 128-token context.
+
 ```bash
 N=$(wc -l < data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx128/train.jsonl)
 EPOCH_STEPS=$(((N + 15) / 16))
