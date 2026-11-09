@@ -109,8 +109,25 @@ def main() -> None:
     if not input_path.is_absolute():
         input_path = ROOT / input_path
     rows = load_records(input_path, args.text_key)
-    results = [analyze(model_id.strip(), rows, args.text_key, args.sequence_length)
-               for model_id in args.models.split(",") if model_id.strip()]
+    results = []
+    for raw_model_id in args.models.split(","):
+        model_id = raw_model_id.strip()
+        if not model_id:
+            continue
+        try:
+            result = analyze(model_id, rows, args.text_key, args.sequence_length)
+            result["status"] = "ok"
+        except Exception as exc:
+            # A candidate tokenizer can be incompatible with the installed
+            # Transformers/tokenizers pair. Record it and keep evaluating the
+            # remaining candidates instead of losing their measurements.
+            result = {
+                "model_id": model_id,
+                "status": "load_or_analysis_error",
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:1000],
+            }
+        results.append(result)
     report = {
         "purpose": "Tokenizer-only diagnostic; does not train a codec or compare NCM quality.",
         "input": str(input_path),
@@ -131,6 +148,9 @@ def main() -> None:
         output_path.write_text(rendered + "\n", encoding="utf-8")
     print("\n=== Tokenizer comparison ===")
     for result in results:
+        if result.get("status") != "ok":
+            print(f"{result['model_id']}: unavailable ({result['error_type']}: {result['error']})")
+            continue
         print(
             f"{result['model_id']}: mean={result['mean_tokens_per_example']:.1f} tokens, "
             f"over-{args.sequence_length}={result['examples_over_context']}/{result['examples']}, "
