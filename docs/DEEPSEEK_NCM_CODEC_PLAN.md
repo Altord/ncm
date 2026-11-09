@@ -6,9 +6,123 @@ This document is the working record for the selected code-tokenizer codec and it
 
 ## Current decision
 
-**Selected target for the final codec run: DeepSeek Coder 1.3B tokenizer + 64-level NCM codec.** This is the project direction. The combined configuration has not yet completed a run, so the measured results below are evidence for the components, not proof of the combination.
+**Current requested codec run: DeepSeek Coder 1.3B tokenizer + 64 quantizer levels.** The user has specified 128,000 updates, codebook size 512, four decoder blocks, syntax/identifier loss weights, and asked me to choose the context and remaining settings. The resulting recipe is exploratory and has not completed a run; prior results are evidence about earlier components, not proof that this combined setup will work.
 
-The tokenizer is `deepseek-ai/deepseek-coder-1.3b-base` (32,256 base vocabulary entries; one custom pad token makes the NCM input/output vocabulary 32,257). The chosen level count is 64, with 256 codes per level. The near-term controlled run keeps the sequence length at 64 and uses 40 passes over the current training corpus.
+The tokenizer is `deepseek-ai/deepseek-coder-1.3b-base` (32,256 base vocabulary entries; one custom pad token makes the NCM input/output vocabulary 32,257). The requested run uses 64 quantizer levels and 512 codes per level. I selected a 128-token context to expose more complete C# methods/classes per example, with a strictly code-only corpus of `.cs` and `.csproj` files. The recipe uses four decoder Transformer blocks and 128,000 optimizer updates.
+
+### Current requested recipe (not yet run)
+
+| Setting | Choice | Reason / interpretation |
+|---|---|---|
+| Base tokenizer | DeepSeek Coder 1.3B | Existing project choice; code-oriented base tokenization. |
+| Context | 128 tokens | Longer code chunks than the previous 64-token codec; useful for methods and larger syntax spans. Requires rebuilding train and validation corpora/caches. |
+| Quantizer | 64 stages, resolutions `[1,3,5,...,125,128]` | Sixty-four distinct, increasing resolutions ending at the full context. |
+| Codebook | 512 entries per stage | User-requested increase from 256; expands per-stage choices and quantizer compute. |
+| Decoder | 4 Transformer blocks | User-requested; prior 4-block test did not fix compilation, but adding depth did not hurt token reconstruction materially. |
+| Reconstruction objective | C# syntax pieces weight 3.0; alphanumeric/identifier/literal pieces 1.5; others 1.0 | Syntax-weighting implementation is a heuristic. Its 20-step smoke run confirmed startup only, not quality. |
+| VQ loss weight | 1.0 | Keep the established baseline balance; no evidence yet supports retuning it. |
+| Training data | Code-only `.cs` and `.csproj`; docs excluded | Tokenizer stage should reconstruct source syntax. Documentation can be used later for generator training or retrieval. |
+| Data split | 90/10 by stable source-file hash | Prevents chunks from one file crossing train/validation. |
+| Optimizer schedule | AdamW, cosine LR 3e-4 to 3e-5 after 50 warmup updates; batch 16; fp32 | Reuse established recipe and likely fit 16 GB VRAM at this model width/context. |
+| Other fixed recipe settings | Seed 42; grad accumulation 1; betas (0.9, 0.95); weight decay 0.01; gradient clip 1.0; dropout 0; EMA decay 0.95; commitment cost 0.25; fine-level dropout 0.25, minimum one stage | Preserve the existing recipe where no experiment has justified a change. |
+| Updates | 128,000 | User-requested. Step count is optimizer updates, not epochs; the rebuilt 128-token corpus will have fewer rows than the old 64-token corpus, so this may mean many data passes. |
+| Checkpoint selection | Highest unweighted validation token accuracy | Smooth signal at 128 tokens; exact-sequence accuracy is logged but sparse. Compilation remains a separate post-training gate. |
+| Save / validation cadence | Save every 5,000 updates; validate every 10,000 | Periodic checkpoints plus enough validation points to select a best artifact without evaluating every update. |
+
+The complete config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx128-weighted-128k.yaml`. Because this run changes context, codebook size, decoder, objective, and steps together, its result cannot attribute any gain to a single lever.
+
+#### Data build and preparation commands
+
+Run once after syncing `data/reference` on the Linux PC:
+
+```bash
+.venv/bin/python -m training.build_reference_corpus \
+  --root data/reference \
+  --output data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx128 \
+  --tokenizer deepseek-ai/deepseek-coder-1.3b-base \
+  --sequence-length 128 \
+  --max-doc-fraction 0 \
+  --include-extensions .cs,.csproj
+
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx128-weighted-128k.yaml \
+  --stage tokenizer
+
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx128-weighted-128k.yaml \
+  --stage tokenizer \
+  --input data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx128/validation.jsonl \
+  --cache-dir data/cache/godot-csharp-deepseek-coder-1.3b-strict-ctx128/tokenizer-validation
+```
+
+Inspect the generated manifest and counts before starting the 128,000-update run. The builder's file-level split hashes source paths, so train and validation remain disjoint when only the chunk length changes.
+
+```bash
+N=$(wc -l < data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx128/train.jsonl)
+EPOCH_STEPS=$(((N + 15) / 16))
+printf 'training_rows=%s optimizer_steps_per_epoch=%s estimated_passes=%.1f\n' \
+  "$N" "$EPOCH_STEPS" "$(awk -v steps=128000 -v epoch_steps="$EPOCH_STEPS" 'BEGIN { print steps / epoch_steps }')"
+```
+
+#### Smoke run, full launch, and live monitor
+
+The context-128 / 512-code config is larger than the prior smoke-tested setup. First run 20 updates using an isolated temporary config whose run/artifact paths end in `smoke`; this checks initialization and VRAM without contaminating the real run. Its accuracy is not meaningful. If it completes, launch the full run. `systemd-inhibit` prevents system sleep, while `runuser` keeps repository files owned by the normal user.
+
+```bash
+cp config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx128-weighted-128k.yaml \
+  /tmp/ncm-deepseek-64level-code512-ctx128-smoke.yaml
+sed -i 's#64level-code512-decoder4-ctx128-weighted-128k#64level-code512-decoder4-ctx128-weighted-smoke#g' \
+  /tmp/ncm-deepseek-64level-code512-ctx128-smoke.yaml
+
+.venv/bin/python -m training.train_tokenizer \
+  --config /tmp/ncm-deepseek-64level-code512-ctx128-smoke.yaml \
+  --max-steps 20
+```
+
+After the smoke run completes:
+
+```bash
+sudo -v
+mkdir -p runs/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx128-weighted-128k
+
+nohup sudo systemd-inhibit \
+  --what=sleep \
+  --why="NCM 64-level code512 context128 training" \
+  runuser -u "$USER" -- \
+  /home/josh/src/ncm/.venv/bin/python -m training.train_tokenizer \
+    --config config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx128-weighted-128k.yaml \
+    --max-steps 128000 \
+  > runs/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx128-weighted-128k/overnight.log \
+  2>&1 < /dev/null &
+
+echo "Launcher PID=$!"
+```
+
+In the alternate terminal:
+
+```bash
+.venv/bin/python scripts/watch_codec_tokenizer_screen.py \
+  --run ds64-code512-decoder4-ctx128=runs/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx128-weighted-128k:128000 \
+  --interval 5
+```
+
+After training, run the held-out reconstruction and compile stress evaluation using the same config/checkpoint:
+
+```bash
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --config config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx128-weighted-128k.yaml \
+  --checkpoint artifacts/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx128-weighted-128k/tokenizer.pt \
+  --input data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx128/validation.jsonl \
+  --text-key text --code-only \
+  --output runs/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx128-weighted-128k/validation/reconstruction.jsonl
+
+.venv/bin/python evaluation/godot_csharp_codec_eval.py \
+  --config config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx128-weighted-128k.yaml \
+  --checkpoint artifacts/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx128-weighted-128k/tokenizer.pt \
+  --input examples/godot_csharp_generator_pilot/codec_compile_stress.jsonl \
+  --text-key target --compile \
+  --output runs/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx128-weighted-128k/stress/compiled.jsonl
+```
 
 ## Facts established so far
 
@@ -69,21 +183,21 @@ Use its best saved artifact, held-out file split, and the same 48 stress snippet
 
 **Decision gate:** compare against the measured DeepSeek 8-level/40-pass, one-block decoder reference. Four blocks made slight changes to reconstruction metrics but left compile rate at 0/48, so decoder depth alone is not a solution. Failure inspection shows lexical damage across reserved words, identifiers, and expressions (examples include `static` → `as`, a method name changing, and `count <= 0` becoming `countIndex0`). Frequent parser diagnostics remain CS1519, CS1003, CS1001, and CS1002. Keep the problem open; the next experiment tests a syntax-sensitive reconstruction objective with the codec and decoder held fixed.
 
-### Step 3a — syntax-sensitive reconstruction loss
+### Deferred ablation — syntax-sensitive reconstruction loss at 8 levels
 
 `training/reconstruction_loss.py` builds per-token weights from the configured Hugging Face tokenizer: C# keywords and punctuation/operator pieces receive weight 3.0; alphanumeric pieces receive weight 1.5; other pieces retain weight 1.0. `training/train_tokenizer.py` uses this only in the reconstruction cross-entropy used for gradient updates. Validation CE, token accuracy, and exact-chunk rate remain unweighted, so reported metrics stay comparable to the baseline. This lexical categorization is a heuristic, not a syntax parser, and it may misclassify BPE pieces; only the matched compile evaluation can show whether the change helps.
 
-The experiment config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-8level-decoder4-syntax-weighted-40pass.yaml`. It holds the tokenizer, 8-level schedule, decoder depth (4), corpus, optimizer, and training duration fixed against the decoder-4 result. The only intended change is the loss weighting. Compare its held-out reconstruction and compile-stress metrics against the decoder-4 result above. If syntax errors decline but identifiers remain damaged, revise the lexical objective based on diagnostics; if weighted loss does not help compilation, do not promote it to the 64-level run as a proven fix.
+The one-factor config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-8level-decoder4-syntax-weighted-40pass.yaml`. It holds the tokenizer, 8-level schedule, decoder depth (4), corpus, optimizer, and duration fixed against the decoder-4 result. This isolated full run is deferred: the user requested the combined 64-level/512-code/context-128/decoder-4/128k recipe instead. Preserve this config as a later ablation if the combined run improves but the source of improvement remains unclear.
 
 The 20-update smoke run completed and reached validation, confirming the weighted-loss path initializes and trains. Its reported 0% token accuracy is expected at this deliberately tiny step count and is not a quality result.
 
 ### Step 4 — train and evaluate the selected 64-level configuration
 
-The selected final codec target remains DeepSeek Coder 1.3B + 64 levels. Use the decoder depth selected by Step 3. Start from `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-40pass.yaml`, changing `dec_layers` only if the Step 3 result supports it. Keep the same corpus, 64-token context, optimizer, and 40-pass schedule.
+The previous 64-level/40-pass recipe is superseded for the next run by the current requested recipe table above: 64 quantizer stages, 512 codes per stage, four decoder blocks, context 128, syntax-weighted reconstruction, and 128,000 updates. Build the matching 128-token code-only data and caches before training.
 
-Compare its held-out reconstruction and 48-snippet compile metrics against the fixed 8-level baselines. This tests the level-count change after the decoder-capacity question has been addressed.
+Compare its held-out reconstruction and the same 48-snippet compile metrics against the fixed 8-level baselines. Because the requested run changes several levers at once, treat the outcome as a combined result, not a causal ablation.
 
-**Requested combined run:** `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-decoder8-syntax-weighted-128k.yaml` sets DeepSeek Coder 1.3B, 64 quantizer levels, 8 decoder blocks, syntax/identifier loss weights of 3.0/1.5, and 128,000 updates. This deliberately combines several changes, so any gain cannot be attributed to a single component. Its metrics are exploratory; follow with matched ablations if it improves.
+**Superseded unrun proposal:** an earlier plan briefly considered 128 residual quantizer stages at context 64, repeating each resolution twice. It was not started; the current recipe below replaces that proposal with the latest user-requested 64-stage, 512-code setup at context 128.
 
 ### Step 5 — respond to remaining failures without reopening tokenizer selection
 
