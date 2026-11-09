@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document is the working record for the selected code-tokenizer codec and its next experiments. It separates observed results from project decisions and hypotheses. Add a dated checkpoint after each run; do not replace earlier results with newer ones.
+This document is the working record for the selected code-tokenizer codec and its next experiments. It separates observed results from project decisions and hypotheses. Keep interim findings in the active investigation section. Add a checkpoint only after the problem section has a verified solution; do not label experiments or partial findings as checkpoints.
 
 ## Current decision
 
@@ -53,9 +53,9 @@ Record:
 - a few representative reference/reconstruction pairs;
 - whether the original still compiles 48/48.
 
-**Completed checkpoint 1:** the report showed originals pass 48/48 and reconstructions pass 0/48. No stress example exceeded the 64-token context. The examples contain substitutions or deletions in declarations, identifiers, keywords, operators, and expressions (for example, `static int` becoming `ant int`, and `count <= 0` becoming `Token values0`). The most frequent compiler diagnostics were CS1519 (131), CS1002 (66), CS1003 (47), CS1001 (45), and CS1525 (30).
+**Interim investigation findings (problem remains open):** the report showed originals pass 48/48 and reconstructions pass 0/48. No stress example exceeded the 64-token context. The examples contain substitutions or deletions in declarations, identifiers, keywords, operators, and expressions (for example, `static int` becoming `ant int`, and `count <= 0` becoming `Token values0`). The most frequent compiler diagnostics were CS1519 (131), CS1002 (66), CS1003 (47), CS1001 (45), and CS1525 (30).
 
-**Conclusion:** this is genuine reconstruction corruption, not input clipping or a failing original/harness. The errors are not limited to formatting. The next controlled step remains the selected DeepSeek + 64-level run; afterward, compare its compiler diagnostics and reconstructed examples against this baseline.
+**Current interpretation:** this is genuine reconstruction corruption, not input clipping or a failing original/harness. The errors are not limited to formatting. This is evidence about the open problem, not a resolved checkpoint. The next controlled step remains the selected DeepSeek + 64-level run; afterward, compare its compiler diagnostics and reconstructed examples against this baseline.
 
 ### Step 2 — train the selected DeepSeek + 64-level codec
 
@@ -84,9 +84,9 @@ Keep all run directories and checkpoint reports separate. Use the same validatio
 
 The codec reconstructs code; it does not learn to turn broad instructions into a program. Before generator training, prepare licensed instruction-to-code examples at method, class, and project scope, and ensure the generator predicts the complete 64-level code representation. Evaluate generated output with formatting, compilation, tests, and Godot headless project checks. Keep documentation/API references for generator learning or retrieval, not as a substitute for codec reconstruction data.
 
-## Checkpoint template
+## Final-solution checkpoint template
 
-Copy this section after each experiment and fill it in:
+Use this only when a section is resolved by a verified fix. Do not add checkpoints for experiments, interim results, or hypotheses:
 
 ```text
 ### Checkpoint N — YYYY-MM-DD — short experiment name
@@ -103,9 +103,6 @@ Decision or hypothesis:
 Next step:
 ```
 
-## Checkpoint history
+## Final-solution checkpoint history
 
-| Checkpoint | Change | Result | Status |
-|---|---|---|---|
-| 0 | Selected DeepSeek Coder 1.3B; recorded 8-level, 40-pass baseline and chose 64 levels as the target configuration. | 8-level 40-pass: 80.19% held-out token accuracy, 3.92% exact chunks, 76.58% character similarity; 0/48 stress snippets compile. | Compile-failure inspection was pending. |
-| 1 | Inspected representative compile failures and aggregate diagnostics for the DeepSeek 8-level, 40-pass checkpoint. | Originals 48/48 compile; reconstructions 0/48. No input exceeds 64 tokens. Dominant errors: CS1519, CS1002, CS1003, CS1001, CS1525. Declarations, identifiers, operators, and expressions are corrupted. | Harness/context clipping ruled out for this suite. DeepSeek + 64 levels remains the selected target; its results are not yet measured. |
+No codec problem section has a verified final solution yet. The DeepSeek tokenizer and 64-level configuration are selected project choices; the 64-level DeepSeek result and compile reliability are still unverified.
