@@ -24,7 +24,29 @@ This is still a syntax/type smoke benchmark, not a semantic test. It should be e
 
 ### Base-tokenizer comparison
 
-`evaluation/compare_code_tokenizers.py` compares GPT-2, CodeBERT, and CodeT5 tokenizers on the same snippets. It reports token counts, exact text round-trip, 64-token overflow, and pieces per identifier-like span. The diagnostic does not establish which tokenizer produces the best NCM codec. Any alternative must be trained with matching vocabulary and special-token IDs, then compared on the held-out corpus and compile suite.
+`evaluation/compare_code_tokenizers.py` compares GPT-2, CodeBERT, and CodeT5 tokenizers on the same snippets. It reports token counts, exact text round-trip, 64-token overflow, and pieces per identifier-like span. A follow-up Qwen2.5-Coder tokenizer diagnostic found substantially fewer tokens and identifier-like pieces on the strict validation corpus, so `config/train/godot-csharp-qwen-strict-32level-tokenizer.yaml` prepares a matched 32-level codec ablation. The Qwen corpus must be rebuilt with Qwen tokenization; never reuse GPT-2 token caches. Qwen's larger vocabulary means increased VQ-VAE vocabulary embeddings/output compute, so start with a short pilot and check peak VRAM and throughput before committing to a 40-epoch run.
+
+Build a separate file-held-out corpus for that experiment. The GPT-2 validation rows cannot be reused as Qwen rows because the chunk boundaries were made with a different tokenizer:
+
+```bash
+.venv/bin/python -m training.build_reference_corpus \
+  --root data/reference \
+  --output data/mycode/godot-csharp-qwen-strict \
+  --tokenizer Qwen/Qwen2.5-Coder-0.5B \
+  --sequence-length 64 \
+  --max-doc-fraction 0 \
+  --include-extensions .cs,.csproj
+
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-qwen-strict-32level-tokenizer.yaml \
+  --stage tokenizer
+
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-qwen-strict-32level-tokenizer.yaml \
+  --stage tokenizer \
+  --input data/mycode/godot-csharp-qwen-strict/validation.jsonl \
+  --cache-dir data/cache/godot-csharp-qwen-strict/tokenizer-validation
+```
 
 ## Decision after 64 levels
 
