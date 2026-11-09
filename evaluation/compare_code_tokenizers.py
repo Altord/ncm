@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -49,9 +50,12 @@ def analyze(model_id: str, rows: list[dict], text_key: str, sequence_length: int
     over_context = 0
     identifier_piece_counts = []
     rows_by_id = []
+    token_ids_digest = hashlib.sha256()
     for row in rows:
         text = row[text_key]
         ids = tokenizer.encode(text, add_special_tokens=False)
+        token_ids_digest.update(json.dumps(ids, separators=(",", ":")).encode("utf-8"))
+        token_ids_digest.update(b"\n")
         decoded = tokenizer.decode(
             ids, skip_special_tokens=False, clean_up_tokenization_spaces=False,
         )
@@ -75,6 +79,7 @@ def analyze(model_id: str, rows: list[dict], text_key: str, sequence_length: int
         "added_pad_token": added_pad,
         "pad_token_id": tokenizer.pad_token_id,
         "eos_token_id": tokenizer.eos_token_id,
+        "sample_token_ids_sha256": token_ids_digest.hexdigest(),
         "examples": len(rows),
         "sequence_length": sequence_length,
         "mean_tokens_per_example": sum(token_counts) / max(1, len(token_counts)),
@@ -156,6 +161,7 @@ def main() -> None:
     print("\n=== Tokenizer comparison ===")
     baseline = next((row for row in results if row.get("model_id") == "Qwen/Qwen2.5-Coder-0.5B"
                      and row.get("status") == "ok"), None)
+    baseline_digest = baseline.get("sample_token_ids_sha256") if baseline else None
     for result in results:
         if result.get("status") != "ok":
             print(f"{result['model_id']}: unavailable ({result['error_type']}: {result['error']})")
@@ -175,6 +181,8 @@ def main() -> None:
             ) / max(base_identifiers, 1e-12)
             print(f"  vs Qwen2.5: tokens {token_delta_pct:+.1f}%, "
                   f"identifier pieces/span {identifier_delta_pct:+.1f}%")
+            if result.get("sample_token_ids_sha256") == baseline_digest:
+                print("  Same token IDs as Qwen2.5 on every comparison sample.")
     if args.output:
         print(f"Report: {output_path}")
 
