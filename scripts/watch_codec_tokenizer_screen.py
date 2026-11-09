@@ -284,6 +284,90 @@ def render_codec_eval_sweep(root: Path) -> str:
     return "\n".join(lines)
 
 
+def render_codec_eval_runs(root: Path, run_specs: list[tuple[str, Path]]) -> str:
+    tasks = []
+    for name, relative_dir in run_specs:
+        base = relative_dir if relative_dir.is_absolute() else root / relative_dir
+        tasks.append((name, "held-out reconstruction",
+                      base / "validation" / "reconstruction.report.json"))
+        tasks.append((name, "compile stress",
+                      base / "stress" / "compiled.report.json"))
+
+    completed = set()
+    durations: dict[str, list[float]] = {
+        "held-out reconstruction": [], "compile stress": []
+    }
+    for name, stage, path in tasks:
+        if not path.is_file():
+            continue
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+            duration = float(report.get("elapsed_seconds", 0.0))
+        except (OSError, ValueError, TypeError):
+            duration = 0.0
+        completed.add((name, stage))
+        if duration > 0:
+            durations[stage].append(duration)
+
+    active_label, active_elapsed = "No codec evaluator process detected", None
+    try:
+        processes = subprocess.check_output(
+            ["ps", "-eo", "etime=,args="], text=True, stderr=subprocess.DEVNULL
+        )
+    except (OSError, subprocess.CalledProcessError):
+        processes = ""
+    for line in processes.splitlines():
+        if "evaluation/godot_csharp_codec_eval.py" not in line:
+            continue
+        elapsed_text, _, command = line.strip().partition(" ")
+        run_name = next((name for name, _ in run_specs if name in command),
+                        run_specs[0][0] if run_specs else "unknown run")
+        stage = ("compile stress" if "codec_compile_stress.jsonl" in command
+                 else "held-out reconstruction")
+        active_label = f"{run_name} — {stage}"
+        active_elapsed = parse_elapsed(elapsed_text)
+        break
+
+    eta_parts = []
+    if " — " in active_label:
+        active_run, active_stage = active_label.split(" — ", 1)
+        samples = durations[active_stage]
+        if samples:
+            eta_parts.append(max(0.0, statistics.median(samples) - (active_elapsed or 0.0)))
+        else:
+            eta_parts = []
+    for name, stage, _ in tasks:
+        if (name, stage) in completed or active_label == f"{name} — {stage}":
+            continue
+        if durations[stage]:
+            eta_parts.append(statistics.median(durations[stage]))
+        else:
+            eta_parts = []
+            break
+
+    total = len(tasks)
+    percent = 100.0 * len(completed) / total if total else 0.0
+    eta = sum(eta_parts) if eta_parts else None
+    lines = [
+        "NCM codec evaluation — read-only monitor",
+        f"Completed checks: {len(completed)}/{total} ({percent:.1f}%)",
+        f"Active: {active_label}",
+        f"Active elapsed: {format_duration(active_elapsed)}",
+        f"Rough remaining time: {format_duration(eta)}",
+        "",
+    ]
+    for name, stage, path in tasks:
+        state = ("done" if (name, stage) in completed else
+                 "running" if active_label == f"{name} — {stage}" else "pending")
+        lines.append(f"{name:32} {stage:26} {state:8} {path.relative_to(root)}")
+    lines += [
+        "",
+        "Each check advances when its report is written; evaluation has no per-snippet progress log.",
+        "ETA is approximate and improves after a check of that stage finishes.",
+    ]
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd(),
@@ -293,6 +377,9 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="Print one snapshot and exit")
     parser.add_argument("--codec-eval-sweep", action="store_true",
                         help="Monitor the current five-candidate reconstruction/compile sweep")
+    parser.add_argument("--eval-run", action="append", default=[],
+                        metavar="NAME=RUN_DIR",
+                        help="Monitor held-out and compile reports for a run; repeat as needed")
     parser.add_argument(
         "--run", action="append", default=[], metavar="NAME=RUN_DIR:TARGET_STEPS",
         help="Monitor any run; repeat for multiple runs. RUN_DIR contains logs/train.jsonl.",
@@ -310,10 +397,25 @@ def main() -> None:
         except ValueError as exc:
             parser.error(f"invalid --run {item!r}; use NAME=RUN_DIR:TARGET_STEPS")
         custom_runs.append((name, Path(run_path), target))
+    eval_runs = []
+    for item in args.eval_run:
+        try:
+            name, run_path = item.split("=", 1)
+            if not name or not run_path:
+                raise ValueError
+        except ValueError:
+            parser.error(f"invalid --eval-run {item!r}; use NAME=RUN_DIR")
+        eval_runs.append((name, Path(run_path)))
+    if args.codec_eval_sweep and eval_runs:
+        parser.error("--codec-eval-sweep and --eval-run cannot be combined")
 
     while True:
-        output = (render_codec_eval_sweep(root) if args.codec_eval_sweep
-                  else render(root, custom_runs or None))
+        if args.codec_eval_sweep:
+            output = render_codec_eval_sweep(root)
+        elif eval_runs:
+            output = render_codec_eval_runs(root, eval_runs)
+        else:
+            output = render(root, custom_runs or None)
         if args.once:
             print(output, flush=True)
             return
