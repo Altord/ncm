@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ CANDIDATES = (
 )
 BATCH_SIZE = 16
 PASSES = 3
+EVAL_CANDIDATES = CANDIDATES
 
 
 @dataclass
@@ -169,6 +171,119 @@ def render(root: Path, custom_runs: list[tuple[str, Path, int]] | None = None) -
     return "\n".join(lines)
 
 
+def active_codec_evaluation() -> tuple[str, float] | None:
+    """Return active evaluator label and elapsed seconds, if it is running."""
+    try:
+        output = subprocess.check_output(
+            ["ps", "-eo", "etime=,args="], text=True, stderr=subprocess.DEVNULL
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    for line in output.splitlines():
+        if "evaluation/godot_csharp_codec_eval.py" not in line:
+            continue
+        elapsed_text, _, command = line.strip().partition(" ")
+        name = next((candidate for candidate in EVAL_CANDIDATES
+                     if f"{candidate}-8level.yaml" in command), "unknown candidate")
+        stage = "compile stress" if "codec_compile_stress.jsonl" in command else "held-out reconstruction"
+        return f"{name} — {stage}", parse_elapsed(elapsed_text)
+    return None
+
+
+def parse_elapsed(value: str) -> float:
+    """Parse ps elapsed time values in [[dd-]hh:]mm:ss form."""
+    try:
+        days = 0
+        if "-" in value:
+            day_text, value = value.split("-", 1)
+            days = int(day_text)
+        parts = [int(part) for part in value.split(":")]
+        if len(parts) == 3:
+            hours, minutes, seconds = parts
+        elif len(parts) == 2:
+            hours, (minutes, seconds) = 0, parts
+        else:
+            return 0.0
+        return float(days * 86400 + hours * 3600 + minutes * 60 + seconds)
+    except ValueError:
+        return 0.0
+
+
+def render_codec_eval_sweep(root: Path) -> str:
+    tasks = []
+    for candidate in EVAL_CANDIDATES:
+        base = root / "runs" / "codec-tokenizer-screen" / candidate / "8level"
+        tasks.append((candidate, "held-out reconstruction",
+                      base / "validation" / "reconstruction.report.json"))
+        tasks.append((candidate, "compile stress",
+                      base / "stress" / "compiled.report.json"))
+
+    finished = []
+    durations_by_stage: dict[str, list[float]] = {
+        "held-out reconstruction": [], "compile stress": []
+    }
+    for candidate, stage, report_path in tasks:
+        if not report_path.is_file():
+            continue
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            duration = float(report.get("elapsed_seconds", 0.0))
+        except (OSError, ValueError, TypeError):
+            duration = 0.0
+        finished.append((candidate, stage))
+        if duration > 0:
+            durations_by_stage[stage].append(duration)
+
+    active = active_codec_evaluation()
+    completed = set(finished)
+    total = len(tasks)
+    eta_parts = []
+    active_label = "No codec evaluator process detected"
+    active_elapsed = None
+    if active:
+        active_label, active_elapsed = active
+        active_candidate, _, active_stage = active_label.partition(" — ")
+        stage_key = active_stage
+        samples = durations_by_stage.get(stage_key, [])
+        average = statistics.median(samples) if samples else None
+        if average is not None:
+            eta_parts.append(max(0.0, average - active_elapsed))
+
+    for candidate, stage, _ in tasks:
+        if (candidate, stage) in completed:
+            continue
+        if active and active_label == f"{candidate} — {stage}":
+            continue
+        samples = durations_by_stage[stage]
+        if samples:
+            eta_parts.append(statistics.median(samples))
+        else:
+            eta_parts = []
+            break
+
+    eta = sum(eta_parts) if eta_parts else None
+    pct = 100.0 * len(finished) / total
+    lines = [
+        "NCM codec evaluation sweep — read-only monitor",
+        f"Completed checks: {len(finished)}/{total} ({pct:.1f}%)",
+        f"Active: {active_label}",
+        f"Active process elapsed: {format_duration(active_elapsed)}",
+        f"Rough time remaining: {format_duration(eta)}",
+        "",
+    ]
+    for candidate, stage, report_path in tasks:
+        done = (candidate, stage) in completed
+        is_active = bool(active and active_label == f"{candidate} — {stage}")
+        status = "done" if done else ("running" if is_active else "pending")
+        lines.append(f"{candidate:22} {stage:26} {status:8} {report_path.relative_to(root)}")
+    lines += [
+        "",
+        "Progress counts finished evaluation reports; the evaluator does not log per-snippet progress.",
+        "ETA is approximate and improves after at least one run of each stage finishes.",
+    ]
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd(),
@@ -176,6 +291,8 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=5.0,
                         help="Refresh interval in seconds")
     parser.add_argument("--once", action="store_true", help="Print one snapshot and exit")
+    parser.add_argument("--codec-eval-sweep", action="store_true",
+                        help="Monitor the current five-candidate reconstruction/compile sweep")
     parser.add_argument(
         "--run", action="append", default=[], metavar="NAME=RUN_DIR:TARGET_STEPS",
         help="Monitor any run; repeat for multiple runs. RUN_DIR contains logs/train.jsonl.",
@@ -195,7 +312,8 @@ def main() -> None:
         custom_runs.append((name, Path(run_path), target))
 
     while True:
-        output = render(root, custom_runs or None)
+        output = (render_codec_eval_sweep(root) if args.codec_eval_sweep
+                  else render(root, custom_runs or None))
         if args.once:
             print(output, flush=True)
             return
