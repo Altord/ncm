@@ -21,15 +21,13 @@ The tokenizer is `deepseek-ai/deepseek-coder-1.3b-base` (32,256 base vocabulary 
 | The NCM model ran on the AMD GPU through ROCm/HIP. | The environment reported PyTorch 2.12.0+rocm7.14.1, HIP 7.14.60850, RX 9060 XT, and runtime MIOpen(HIP) warnings. PyTorch retains `torch.cuda` and `device="cuda"` names for its HIP backend. | The `cuda` device label is normal for this ROCm PyTorch build; it does not mean the run used an NVIDIA GPU. |
 | The 64-level GPT-2 codec previously reconstructed more accurately than the earlier GPT-2 codecs. | Prior held-out report: 94.21% token accuracy, 19.13% exact chunks, 90.40% character similarity. A separate 48-snippet compile run reported 8/48 compilable reconstructions. | Higher levels improved fidelity in that GPT-2 experiment. It does not prove the DeepSeek + 64-level result. |
 
-## Checkpoint 0 — selection and baseline recorded
-
-**Status:** recorded; no new training started by this checkpoint.
+## Selected target and measured reference
 
 - **Tokenizer decision:** DeepSeek Coder 1.3B is selected.
 - **Target level count:** 64.
 - **Measured reference codec:** DeepSeek Coder 1.3B, 8 levels, 40 passes.
 - **Reference metrics:** held-out token accuracy 80.19%; exact chunks 60/1,530 (3.92%); character similarity 76.58%; shared compile set 0/48.
-- **Immediate next work:** inspect the 48 saved compile failures before training the selected 64-level combination.
+- **Immediate next work:** test decoder depth against the existing 8-level baseline before training the selected 64-level combination.
 
 ## Step-by-step plan
 
@@ -55,21 +53,27 @@ Record:
 
 **Interim investigation findings (problem remains open):** the report showed originals pass 48/48 and reconstructions pass 0/48. No stress example exceeded the 64-token context. The examples contain substitutions or deletions in declarations, identifiers, keywords, operators, and expressions (for example, `static int` becoming `ant int`, and `count <= 0` becoming `Token values0`). The most frequent compiler diagnostics were CS1519 (131), CS1002 (66), CS1003 (47), CS1001 (45), and CS1525 (30).
 
-**Current interpretation:** this is genuine reconstruction corruption, not input clipping or a failing original/harness. The errors are not limited to formatting. This is evidence about the open problem, not a resolved checkpoint. The next controlled step remains the selected DeepSeek + 64-level run; afterward, compare its compiler diagnostics and reconstructed examples against this baseline.
+**Current interpretation:** this is genuine reconstruction corruption, not input clipping or a failing original/harness. The errors are not limited to formatting. This is evidence about the open problem, not a resolved checkpoint. The next controlled step is to increase decoder depth against the existing 8-level baseline, then carry the selected decoder design into the planned DeepSeek + 64-level run if it helps.
 
-### Step 2 — train the selected DeepSeek + 64-level codec
+### Step 2 — controlled decoder-depth test at 8 levels
 
-The controlled 64-level config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-40pass.yaml`. It keeps tokenizer, source corpus, 64-token context, batch size, optimizer, and 40-pass schedule aligned with the DeepSeek 8-level reference. The expected run is 44,080 updates for the current 17,630-row training corpus.
+The new ablation config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-8level-decoder4-40pass.yaml`. It holds the selected tokenizer, 8-level quantizer, corpus, context, training schedule, and optimizer fixed against the 8-level/40-pass reference. The only model change is `dec_layers: 1` to `dec_layers: 4`. In this implementation `dec_layers` is the total number of decoder Transformer blocks; this adds three residual self-attention/MLP blocks while keeping the 64-dimensional latent width unchanged. The expected run is 44,080 updates for the current 17,630-row training corpus.
 
-After training, record the selected checkpoint step, validation token accuracy, exact-chunk rate, reconstruction CE, codebook utilization, throughput, and peak VRAM. Do not treat validation token accuracy alone as a compile-quality result.
+After training, record selected checkpoint step, held-out token accuracy, exact-chunk rate, reconstruction CE, codebook utilization, throughput, and peak VRAM. Do not treat validation token accuracy alone as a compile-quality result.
 
-### Step 3 — evaluate the selected codec on held-out code and the shared compile set
+### Step 3 — evaluate the decoder-depth test
 
 Use its best saved artifact, held-out file split, and the same 48 stress snippets. Record character similarity, exact chunks, token accuracy, original/reconstructed compile counts, and compiler error classes. The stress-set originals must still compile 48/48.
 
-**Decision gate:** compare the 64-level result against the recorded DeepSeek 8-level, 40-pass reference. This answers whether the chosen configuration improves actual code reconstruction and compilation, not just training loss.
+**Decision gate:** compare against the measured DeepSeek 8-level/40-pass, one-block decoder reference. If four blocks improve reconstruction and compile rate, use the four-block decoder in the selected 64-level config. If the metrics improve but compiler errors remain broad, keep the problem open and test another decoder-capacity dimension or objective. If four blocks do not help, inspect the resulting error categories before choosing the next change.
 
-### Step 4 — respond to remaining failures without reopening tokenizer selection
+### Step 4 — train and evaluate the selected 64-level configuration
+
+The selected final codec target remains DeepSeek Coder 1.3B + 64 levels. Use the decoder depth selected by Step 3. Start from `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-40pass.yaml`, changing `dec_layers` only if the Step 3 result supports it. Keep the same corpus, 64-token context, optimizer, and 40-pass schedule.
+
+Compare its held-out reconstruction and 48-snippet compile metrics against the fixed 8-level baselines. This tests the level-count change after the decoder-capacity question has been addressed.
+
+### Step 5 — respond to remaining failures without reopening tokenizer selection
 
 If DeepSeek + 64 levels still fails compilation, use the failure categories from Step 1 to choose one controlled change at a time while keeping the selected tokenizer and 64 levels fixed:
 
@@ -78,9 +82,9 @@ If DeepSeek + 64 levels still fails compilation, use the failure categories from
 3. **Training data and chunk boundaries:** audit the strict C# corpus for duplicates, malformed examples, generated/vendor files, and windows that split useful structures. Keep file-level held-out separation.
 4. **Context length:** later test 128/256-token contexts for larger classes and scripts. This addresses complete-program scope; it is not needed to explain the current 48-snippet failures because all 48 inputs fit in 64 tokens.
 
-Keep all run directories and checkpoint reports separate. Use the same validation source split and stress suite, and record the change plus result in a new checkpoint section below.
+Keep all run directories and checkpoint reports separate. Use the same validation source split and stress suite. Record interim measurements in the active investigation notes; create a final-solution checkpoint only after a tested change resolves the section.
 
-### Step 5 — only then train the code generator
+### Step 6 — only then train the code generator
 
 The codec reconstructs code; it does not learn to turn broad instructions into a program. Before generator training, prepare licensed instruction-to-code examples at method, class, and project scope, and ensure the generator predicts the complete 64-level code representation. Evaluate generated output with formatting, compilation, tests, and Godot headless project checks. Keep documentation/API references for generator learning or retrieval, not as a substitute for codec reconstruction data.
 
