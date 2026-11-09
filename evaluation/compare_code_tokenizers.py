@@ -162,6 +162,7 @@ def main() -> None:
     baseline = next((row for row in results if row.get("model_id") == "Qwen/Qwen2.5-Coder-0.5B"
                      and row.get("status") == "ok"), None)
     baseline_digest = baseline.get("sample_token_ids_sha256") if baseline else None
+    digest_groups: dict[str, list[str]] = {}
     for result in results:
         if result.get("status") != "ok":
             print(f"{result['model_id']}: unavailable ({result['error_type']}: {result['error']})")
@@ -183,6 +184,14 @@ def main() -> None:
                   f"identifier pieces/span {identifier_delta_pct:+.1f}%")
             if result.get("sample_token_ids_sha256") == baseline_digest:
                 print("  Same token IDs as Qwen2.5 on every comparison sample.")
+        digest = result.get("sample_token_ids_sha256")
+        if digest:
+            digest_groups.setdefault(digest, []).append(result["model_id"])
+    duplicates = [models for models in digest_groups.values() if len(models) > 1]
+    if duplicates:
+        print("Identical token-ID sequences on this comparison set:")
+        for models in duplicates:
+            print("  " + " = ".join(models))
     if args.output:
         print(f"Report: {output_path}")
 
