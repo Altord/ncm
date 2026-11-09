@@ -53,7 +53,9 @@ Record:
 - a few representative reference/reconstruction pairs;
 - whether the original still compiles 48/48.
 
-**Decision gate:** if the saved results show a harness/input issue, correct that before interpreting codec quality. If the originals pass and the failures are reconstruction syntax/type errors, keep them as genuine codec failures and proceed.
+**Completed checkpoint 1:** the report showed originals pass 48/48 and reconstructions pass 0/48. No stress example exceeded the 64-token context. The examples contain substitutions or deletions in declarations, identifiers, keywords, operators, and expressions (for example, `static int` becoming `ant int`, and `count <= 0` becoming `Token values0`). The most frequent compiler diagnostics were CS1519 (131), CS1002 (66), CS1003 (47), CS1001 (45), and CS1525 (30).
+
+**Conclusion:** this is genuine reconstruction corruption, not input clipping or a failing original/harness. The errors are not limited to formatting. The next controlled step remains the selected DeepSeek + 64-level run; afterward, compare its compiler diagnostics and reconstructed examples against this baseline.
 
 ### Step 2 — train the selected DeepSeek + 64-level codec
 
@@ -105,4 +107,5 @@ Next step:
 
 | Checkpoint | Change | Result | Status |
 |---|---|---|---|
-| 0 | Selected DeepSeek Coder 1.3B; recorded 8-level, 40-pass baseline and chose 64 levels as the target configuration. | 8-level 40-pass: 80.19% held-out token accuracy, 3.92% exact chunks, 76.58% character similarity; 0/48 stress snippets compile. | Compile-failure inspection is next; DeepSeek + 64-level run has not yet been measured. |
+| 0 | Selected DeepSeek Coder 1.3B; recorded 8-level, 40-pass baseline and chose 64 levels as the target configuration. | 8-level 40-pass: 80.19% held-out token accuracy, 3.92% exact chunks, 76.58% character similarity; 0/48 stress snippets compile. | Compile-failure inspection was pending. |
+| 1 | Inspected representative compile failures and aggregate diagnostics for the DeepSeek 8-level, 40-pass checkpoint. | Originals 48/48 compile; reconstructions 0/48. No input exceeds 64 tokens. Dominant errors: CS1519, CS1002, CS1003, CS1001, CS1525. Declarations, identifiers, operators, and expressions are corrupted. | Harness/context clipping ruled out for this suite. DeepSeek + 64 levels remains the selected target; its results are not yet measured. |
