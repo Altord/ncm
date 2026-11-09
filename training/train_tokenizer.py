@@ -14,6 +14,22 @@ from models.vqvae import VQVAE
 from training.engine import (Run, autocast_context, checkpoint_state, device_from,
                              export_artifact, load_resume, lr_for_step,
                              make_loader, make_scaler, seed_all)
+from training.data import load_base_tokenizer
+from training.reconstruction_loss import make_code_token_weights
+
+
+def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=True):
+    """Return unweighted CE for reporting and (optionally) weighted train CE."""
+    per_token = F.cross_entropy(logits.float().transpose(1, 2), targets,
+                                reduction="none")
+    valid_weights = valid.to(per_token.dtype) if mask_padding else torch.ones_like(per_token)
+    raw_ce = (per_token * valid_weights).sum() / valid_weights.sum().clamp_min(1)
+    if token_weights is None:
+        return raw_ce, raw_ce
+    weights = token_weights[targets]
+    combined_weights = weights * valid_weights
+    weighted_ce = (per_token * combined_weights).sum() / combined_weights.sum().clamp_min(1)
+    return raw_ce, weighted_ce
 
 
 def main():
@@ -54,8 +70,28 @@ def main():
     eval_every = int(cfg.train.get("eval_every", save_every))
     mask_padding = bool(cfg.train.get("mask_padding", True))
     vq_weight = float(cfg.train.get("vq_loss_weight", 1.0))
+    weight_cfg = cfg.train.get("reconstruction_token_weights", None)
+    token_weights = None
+    if weight_cfg:
+        tokenizer = load_base_tokenizer(cfg.tokenizer)
+        token_weights = torch.tensor(make_code_token_weights(
+            tokenizer,
+            int(cfg.vqvae.in_vocab_size),
+            float(weight_cfg.get("syntax", 3.0)),
+            float(weight_cfg.get("identifier", 1.5)),
+        ), dtype=torch.float32, device=device)
+        syntax_count = int((token_weights == float(weight_cfg.get("syntax", 3.0))).sum())
+        identifier_count = int((token_weights == float(weight_cfg.get("identifier", 1.5))).sum())
+        print(
+            "Reconstruction token weighting enabled: "
+            f"syntax={float(weight_cfg.get('syntax', 3.0))}, "
+            f"identifier/literal={float(weight_cfg.get('identifier', 1.5))}; "
+            f"weighted vocabulary ids={syntax_count + identifier_count} "
+            f"(syntax={syntax_count}, identifier/literal={identifier_count}); "
+            "validation metrics remain unweighted.", flush=True
+        )
     optim.zero_grad(set_to_none=True)
-    running = {"loss": 0.0, "recon_ce": 0.0, "vq": 0.0}
+    running = {"loss": 0.0, "recon_ce": 0.0, "weighted_recon_ce": 0.0, "vq": 0.0}
     micro = 0
     since_log = 0
     last_log_time = time.perf_counter()
@@ -89,9 +125,7 @@ def main():
                 valid = vb["mask"].to(device, non_blocking=True).bool()
                 with autocast_context(device, cfg.train.precision):
                     logits, vq_loss, _, _, _ = model(vx)
-                    ce = F.cross_entropy(logits.float().transpose(1, 2), vx, reduction="none")
-                    ce = ((ce * valid).sum() / valid.sum().clamp_min(1)
-                          if mask_padding else ce.mean())
+                    ce, _ = reconstruction_ce(logits, vx, valid, None, mask_padding)
                     loss = ce + vq_weight * vq_loss.float()
                 predictions = logits.argmax(dim=-1)
                 valid_tokens += int(valid.sum())
@@ -137,19 +171,17 @@ def main():
             valid = batch["mask"].to(device, non_blocking=True).bool()
             with autocast_context(device, cfg.train.precision):
                 logits, vq_loss, per_level_util, global_util, _ = model(x)
-                ce = F.cross_entropy(logits.float().transpose(1, 2), x,
-                                     reduction="none")
-                if mask_padding:
-                    ce = (ce * valid).sum() / valid.sum().clamp_min(1)
-                else:
-                    ce = ce.mean()
-                loss = ce + vq_weight * vq_loss.float()
+                ce, train_ce = reconstruction_ce(
+                    logits, x, valid, token_weights, mask_padding
+                )
+                loss = train_ce + vq_weight * vq_loss.float()
             last_util = {"per_level_codebook_utilization": per_level_util,
                          "global_codebook_utilization": global_util}
             scaler.scale(loss / accum).backward()
             micro += 1
             n_examples = int(x.shape[0])
-            for key, val in (("loss", loss), ("recon_ce", ce), ("vq", vq_loss)):
+            for key, val in (("loss", loss), ("recon_ce", ce),
+                             ("weighted_recon_ce", train_ce), ("vq", vq_loss)):
                 running[key] += float(val.detach()) * n_examples
             since_log += n_examples
             if micro % accum:

@@ -53,7 +53,7 @@ Record:
 
 **Interim investigation findings (problem remains open):** the report showed originals pass 48/48 and reconstructions pass 0/48. No stress example exceeded the 64-token context. The examples contain substitutions or deletions in declarations, identifiers, keywords, operators, and expressions (for example, `static int` becoming `ant int`, and `count <= 0` becoming `Token values0`). The most frequent compiler diagnostics were CS1519 (131), CS1002 (66), CS1003 (47), CS1001 (45), and CS1525 (30).
 
-**Current interpretation:** this is genuine reconstruction corruption, not input clipping or a failing original/harness. The errors are not limited to formatting. This is evidence about the open problem, not a resolved checkpoint. The next controlled step is to increase decoder depth against the existing 8-level baseline, then carry the selected decoder design into the planned DeepSeek + 64-level run if it helps.
+**Current interpretation:** this is genuine reconstruction corruption, not input clipping or a failing original/harness. The errors affect keywords, identifiers, and expressions, not only formatting. Decoder-depth testing is complete and did not improve compile rate. The next controlled step is syntax-sensitive reconstruction loss; the selected DeepSeek + 64-level codec remains a later, unverified target.
 
 ### Step 2 — controlled decoder-depth test at 8 levels
 
@@ -61,11 +61,19 @@ The ablation config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-8le
 
 After training, record selected checkpoint step, held-out token accuracy, exact-chunk rate, reconstruction CE, codebook utilization, throughput, and peak VRAM. Do not treat validation token accuracy alone as a compile-quality result.
 
+**Decoder-depth result (completed, problem still open):** selected step 44,080. Against the 1-block reference, held-out accuracy changed 80.19% → 80.43%, exact chunks 3.92% → 3.79%, and character similarity 76.58% → 76.86%. On the shared stress set, token accuracy changed 70.96% → 72.27%, character similarity 63.04% → 63.02%, and reconstructed compilation remained 0/48 (originals 48/48). The additional decoder blocks gave a small accuracy change but did not improve the outcome that matters: compilable reconstruction.
+
 ### Step 3 — evaluate the decoder-depth test
 
 Use its best saved artifact, held-out file split, and the same 48 stress snippets. Record character similarity, exact chunks, token accuracy, original/reconstructed compile counts, and compiler error classes. The stress-set originals must still compile 48/48.
 
-**Decision gate:** compare against the measured DeepSeek 8-level/40-pass, one-block decoder reference. If four blocks improve reconstruction and compile rate, use the four-block decoder in the selected 64-level config. If the metrics improve but compiler errors remain broad, keep the problem open and test another decoder-capacity dimension or objective. If four blocks do not help, inspect the resulting error categories before choosing the next change.
+**Decision gate:** compare against the measured DeepSeek 8-level/40-pass, one-block decoder reference. Four blocks made slight changes to reconstruction metrics but left compile rate at 0/48, so decoder depth alone is not a solution. Failure inspection shows lexical damage across reserved words, identifiers, and expressions (examples include `static` → `as`, a method name changing, and `count <= 0` becoming `countIndex0`). Frequent parser diagnostics remain CS1519, CS1003, CS1001, and CS1002. Keep the problem open; the next experiment tests a syntax-sensitive reconstruction objective with the codec and decoder held fixed.
+
+### Step 3a — syntax-sensitive reconstruction loss
+
+`training/reconstruction_loss.py` builds per-token weights from the configured Hugging Face tokenizer: C# keywords and punctuation/operator pieces receive weight 3.0; alphanumeric pieces receive weight 1.5; other pieces retain weight 1.0. `training/train_tokenizer.py` uses this only in the reconstruction cross-entropy used for gradient updates. Validation CE, token accuracy, and exact-chunk rate remain unweighted, so reported metrics stay comparable to the baseline. This lexical categorization is a heuristic, not a syntax parser, and it may misclassify BPE pieces; only the matched compile evaluation can show whether the change helps.
+
+The experiment config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-8level-decoder4-syntax-weighted-40pass.yaml`. It holds the tokenizer, 8-level schedule, decoder depth (4), corpus, optimizer, and training duration fixed against the decoder-4 result. The only intended change is the loss weighting. Compare its held-out reconstruction and compile-stress metrics against the decoder-4 result above. If syntax errors decline but identifiers remain damaged, revise the lexical objective based on diagnostics; if weighted loss does not help compilation, do not promote it to the 64-level run as a proven fix.
 
 ### Step 4 — train and evaluate the selected 64-level configuration
 
