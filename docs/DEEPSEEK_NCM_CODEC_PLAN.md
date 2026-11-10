@@ -238,3 +238,13 @@ Next step:
 ## Final-solution checkpoint history
 
 No codec problem section has a verified final solution yet. The DeepSeek tokenizer and 64-level configuration are selected project choices; the 64-level DeepSeek result and compile reliability are still unverified.
+
+## Codebook-capacity ablation — 64 levels × 4,096 entries
+
+The 128,000-step weighted DeepSeek run reached 95.55% best validation token accuracy and 24/48 compile passes on the 48-snippet stress set. The 100,000-step checkpoint scored 23/48 on the same stress set, with nearly identical token/chunk/similarity metrics. This is evidence that simply training longer was not enough; identifier and syntax token substitutions still cause many failures.
+
+The next experiment changes one model capacity variable: codebook entries per level rise from 512 to 4,096 (an eightfold increase). It keeps the tokenizer, corpus and file split, 64 quantizer levels, 128-token context, four decoder blocks, weighted reconstruction objective, optimizer, batch size, and checkpoint metric unchanged. It is capped at 30,000 steps for an initial capacity/throughput check. The config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code4096-decoder4-ctx128-weighted-30k.yaml`.
+
+4096 is a power-of-two codebook size, not a number of quantizer levels. This is a plausible test because many codebooks were close to/full utilization, but utilization alone does not prove the codebook is the limiting factor. Each nearest-code lookup becomes more expensive; expect lower throughput, so measure actual steps/second before extrapolating wall time. The code vectors themselves are not the main memory concern; distance computation is the likely cost.
+
+Use the same 128-token validation split and identical 48-snippet stress suite after training. Compare against the 512-entry run's step-30,000 checkpoint (if available) for a matched-update comparison, and also report the best validation-selected checkpoint. The decision metric is reconstructed compile passes, with token accuracy, exact-chunk rate, character similarity, validation reconstruction CE, utilization, VRAM, and throughput as supporting measurements. Do not infer a win from codebook utilization or training CE alone. If 4,096 entries do not improve syntax/identifier preservation or stress compilation, the next controlled change should target chunk/code-span supervision or boundary alignment rather than increasing codebook size again.
