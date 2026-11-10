@@ -117,9 +117,13 @@ def load_resume(path, model, optimizer, scaler, device):
     if scaler is not None and "scaler" in ckpt:
         scaler.load_state_dict(ckpt["scaler"])
     if "rng" in ckpt:
-        torch.set_rng_state(ckpt["rng"]["torch"])
+        # Checkpoints are loaded onto the training device, but the default
+        # PyTorch RNG state is CPU-only even when the model trains on CUDA/HIP.
+        torch.set_rng_state(ckpt["rng"]["torch"].cpu())
         if torch.cuda.is_available() and ckpt["rng"].get("cuda") is not None:
-            torch.cuda.set_rng_state_all(ckpt["rng"]["cuda"])
+            torch.cuda.set_rng_state_all(
+                [state.cpu() for state in ckpt["rng"]["cuda"]]
+            )
         random.setstate(ckpt["rng"]["python"])
         np.random.set_state(ckpt["rng"]["numpy"])
     return int(ckpt.get("step", -1)) + 1
