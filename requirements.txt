@@ -3,6 +3,7 @@ numpy
 omegaconf
 hydra-core
 transformers>=4.51
+tree-sitter-language-pack>=1.0,<2
 huggingface_hub[cli]
 regex
 rouge_score

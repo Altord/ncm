@@ -15,7 +15,7 @@ from training.engine import (Run, autocast_context, checkpoint_state, device_fro
                              export_artifact, load_resume, lr_for_step,
                              make_loader, make_scaler, seed_all)
 from training.data import load_base_tokenizer
-from training.reconstruction_loss import make_code_token_weights
+from training.reconstruction_loss import make_code_token_weights, select_reconstruction_weights
 
 
 def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=True):
@@ -26,7 +26,9 @@ def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=T
     raw_ce = (per_token * valid_weights).sum() / valid_weights.sum().clamp_min(1)
     if token_weights is None:
         return raw_ce, raw_ce
-    weights = token_weights[targets]
+    weights = token_weights
+    if weights.ndim == 1:
+        weights = weights[targets]
     combined_weights = weights * valid_weights
     weighted_ce = (per_token * combined_weights).sum() / combined_weights.sum().clamp_min(1)
     return raw_ce, weighted_ce
@@ -72,24 +74,45 @@ def main():
     vq_weight = float(cfg.train.get("vq_loss_weight", 1.0))
     weight_cfg = cfg.train.get("reconstruction_token_weights", None)
     token_weights = None
+    occurrence_weighting = bool(
+        weight_cfg and str(weight_cfg.get("mode", "")) == "per_occurrence"
+    )
     if weight_cfg:
-        tokenizer = load_base_tokenizer(cfg.tokenizer)
-        token_weights = torch.tensor(make_code_token_weights(
-            tokenizer,
-            int(cfg.vqvae.in_vocab_size),
-            float(weight_cfg.get("syntax", 3.0)),
-            float(weight_cfg.get("identifier", 1.5)),
-        ), dtype=torch.float32, device=device)
-        syntax_count = int((token_weights == float(weight_cfg.get("syntax", 3.0))).sum())
-        identifier_count = int((token_weights == float(weight_cfg.get("identifier", 1.5))).sum())
-        print(
-            "Reconstruction token weighting enabled: "
-            f"syntax={float(weight_cfg.get('syntax', 3.0))}, "
-            f"identifier/literal={float(weight_cfg.get('identifier', 1.5))}; "
-            f"weighted vocabulary ids={syntax_count + identifier_count} "
-            f"(syntax={syntax_count}, identifier/literal={identifier_count}); "
-            "validation metrics remain unweighted.", flush=True
-        )
+        if occurrence_weighting:
+            cache_manifest = Path(cfg.data.cache_dir) / "manifest.json"
+            if not cache_manifest.is_file():
+                raise FileNotFoundError(f"Prepared cache manifest not found: {cache_manifest}")
+            import json
+            manifest = json.loads(cache_manifest.read_text(encoding="utf-8"))
+            if "token_weights" not in manifest.get("arrays", {}):
+                raise ValueError(
+                    "Per-occurrence loss weights are enabled, but the prepared cache "
+                    "has no token_weights.bin; rerun training.prepare_data"
+                )
+            print(
+                "Per-occurrence reconstruction weighting enabled: "
+                f"syntax={float(weight_cfg.get('syntax', 3.0))}, "
+                f"identifier/literal={float(weight_cfg.get('identifier', 1.5))}; "
+                "validation metrics remain unweighted.", flush=True
+            )
+        else:
+            tokenizer = load_base_tokenizer(cfg.tokenizer)
+            token_weights = torch.tensor(make_code_token_weights(
+                tokenizer,
+                int(cfg.vqvae.in_vocab_size),
+                float(weight_cfg.get("syntax", 3.0)),
+                float(weight_cfg.get("identifier", 1.5)),
+            ), dtype=torch.float32, device=device)
+            syntax_count = int((token_weights == float(weight_cfg.get("syntax", 3.0))).sum())
+            identifier_count = int((token_weights == float(weight_cfg.get("identifier", 1.5))).sum())
+            print(
+                "Reconstruction token weighting enabled: "
+                f"syntax={float(weight_cfg.get('syntax', 3.0))}, "
+                f"identifier/literal={float(weight_cfg.get('identifier', 1.5))}; "
+                f"weighted vocabulary ids={syntax_count + identifier_count} "
+                f"(syntax={syntax_count}, identifier/literal={identifier_count}); "
+                "validation metrics remain unweighted.", flush=True
+            )
     optim.zero_grad(set_to_none=True)
     running = {"loss": 0.0, "recon_ce": 0.0, "weighted_recon_ce": 0.0, "vq": 0.0}
     micro = 0
@@ -171,8 +194,15 @@ def main():
             valid = batch["mask"].to(device, non_blocking=True).bool()
             with autocast_context(device, cfg.train.precision):
                 logits, vq_loss, per_level_util, global_util, _ = model(x)
+                occurrence_weights = (
+                    batch["token_weights"].to(device, non_blocking=True).float()
+                    if occurrence_weighting else None
+                )
+                reconstruction_weights = select_reconstruction_weights(
+                    x, token_weights, occurrence_weights
+                )
                 ce, train_ce = reconstruction_ce(
-                    logits, x, valid, token_weights, mask_padding
+                    logits, x, valid, reconstruction_weights, mask_padding
                 )
                 loss = train_ce + vq_weight * vq_loss.float()
             last_util = {"per_level_codebook_utilization": per_level_util,

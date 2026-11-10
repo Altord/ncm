@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from training.data import (
     encode_text, fixed_sequence, iter_records, load_base_tokenizer,
     save_cache_manifest, sha256_file, write_rows,
 )
+from training.csharp_structure import token_occurrence_weights
 
 
 def _load_config(path):
@@ -33,6 +35,11 @@ def prepare_tokenizer(cfg):
     out.mkdir(parents=True, exist_ok=True)
     text_key = str(dcfg.get("text_key", "text"))
     append_eos = bool(dcfg.get("append_eos", True))
+    weight_cfg = cfg.train.get("reconstruction_token_weights", None)
+    occurrence_weights = bool(weight_cfg and str(weight_cfg.get("mode", "")) == "per_occurrence")
+    hf_tokenizer = getattr(tok, "hf_tokenizer", None)
+    if occurrence_weights and (hf_tokenizer is None or not getattr(hf_tokenizer, "is_fast", False)):
+        raise ValueError("Per-occurrence code weights require a fast Hugging Face tokenizer")
 
     def rows():
         for record in iter_records(dcfg.input, str(dcfg.get("format", "jsonl"))):
@@ -45,25 +52,66 @@ def prepare_tokenizer(cfg):
                     f"Encoded token id exceeds model.in_vocab_size={cfg.model.in_vocab_size}; "
                     "check added special tokens and vocabulary size"
                 )
-            yield ids, mask
+            if occurrence_weights:
+                text = record[text_key]
+                encoded = hf_tokenizer(text, return_offsets_mapping=True)
+                offset_ids = list(map(int, encoded["input_ids"]))
+                base_ids = list(map(int, tok.encode(text)))
+                if offset_ids != base_ids:
+                    raise ValueError("Tokenizer offset encoding does not match training token IDs")
+                if Path(str(record.get("source", ""))).suffix.lower() == ".cs":
+                    token_weights = token_occurrence_weights(
+                        text, [tuple(map(int, pair)) for pair in encoded["offset_mapping"]],
+                        float(weight_cfg.get("syntax", 3.0)),
+                        float(weight_cfg.get("identifier", 1.5)),
+                    )
+                else:
+                    # Keep project/XML records in the corpus without pretending they
+                    # have C# token classes.
+                    token_weights = [1.0] * len(base_ids)
+                if append_eos and eos_id is not None and (not base_ids or base_ids[-1] != eos_id):
+                    token_weights.append(1.0)
+                token_weights = token_weights[:seq_len]
+                if len(token_weights) < seq_len:
+                    token_weights.extend([1.0] * (seq_len - len(token_weights)))
+                # fixed_sequence replaces the final token with EOS on truncation.
+                if len(base_ids) + int(append_eos and eos_id is not None) >= seq_len:
+                    token_weights[seq_len - 1] = 1.0
+                yield ids, mask, token_weights
+            else:
+                yield ids, mask
 
     token_path, mask_path = out / "tokens.bin", out / "mask.bin"
+    weights_path = out / "token_weights.bin"
     # Stream into temporary files, then publish a manifest only after complete writes.
     token_tmp, mask_tmp = out / "tokens.bin.tmp", out / "mask.bin.tmp"
+    weights_tmp = out / "token_weights.bin.tmp"
     count = 0
-    with token_tmp.open("wb") as ft, mask_tmp.open("wb") as fm:
-        for ids, mask in rows():
+    with ExitStack() as stack:
+        ft = stack.enter_context(token_tmp.open("wb"))
+        fm = stack.enter_context(mask_tmp.open("wb"))
+        fw = stack.enter_context(weights_tmp.open("wb")) if occurrence_weights else None
+        for row in rows():
+            ids, mask = row[:2]
             np.asarray(ids, dtype=np.int32).tofile(ft)
             np.asarray(mask, dtype=np.uint8).tofile(fm)
+            if fw is not None:
+                np.asarray(row[2], dtype=np.float32).tofile(fw)
             count += 1
     if count == 0:
         raise ValueError("No training records were found")
     token_tmp.replace(token_path)
     mask_tmp.replace(mask_path)
-    save_cache_manifest(out, "tokenizer", count, {
+    arrays = {
         "tokens": {"file": token_path.name, "dtype": "int32", "shape": [seq_len]},
         "mask": {"file": mask_path.name, "dtype": "uint8", "shape": [seq_len]},
-    }, {
+    }
+    if occurrence_weights:
+        weights_tmp.replace(weights_path)
+        arrays["token_weights"] = {
+            "file": weights_path.name, "dtype": "float32", "shape": [seq_len],
+        }
+    save_cache_manifest(out, "tokenizer", count, arrays, {
         "source": str(Path(dcfg.input).resolve()),
         "source_sha256": sha256_file(dcfg.input),
         "tokenizer": str(cfg.tokenizer.name),
@@ -71,6 +119,7 @@ def prepare_tokenizer(cfg):
         "pad_id": pad_id,
         "eos_id": eos_id,
         "sequence_length": seq_len,
+        "occurrence_weighted": occurrence_weights,
     })
     print(f"Prepared {count:,} sequences at {out}", flush=True)
 

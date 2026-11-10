@@ -7,12 +7,15 @@ examples for training the Next Concept generator.
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 import hashlib
 import json
 from pathlib import Path
 import random
 
 from transformers import AutoTokenizer
+
+from training.csharp_structure import byte_to_char_offsets, syntax_boundary_bytes
 
 
 CODE_SUFFIXES = {".cs", ".csproj", ".tscn", ".tres", ".godot", ".gdshader"}
@@ -26,7 +29,7 @@ def is_validation(path: Path, root: Path, fraction: float) -> bool:
     return bucket < int(fraction * 10_000)
 
 
-def chunk_file(path: Path, tokenizer, max_tokens: int):
+def chunk_file(path: Path, tokenizer, max_tokens: int, ast_aware: bool = False):
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
@@ -34,9 +37,30 @@ def chunk_file(path: Path, tokenizer, max_tokens: int):
     if not text.strip():
         return
     ids = tokenizer.encode(text, add_special_tokens=False)
+    offsets = None
+    boundaries = set()
+    if ast_aware and path.suffix.lower() == ".cs":
+        try:
+            encoded = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+            offsets = encoded["offset_mapping"]
+            byte_to_char = byte_to_char_offsets(text)
+            char_boundaries = {
+                byte_to_char[min(pos, len(byte_to_char) - 1)]
+                for pos in syntax_boundary_bytes(text)
+            }
+            boundaries = {
+                index + 1 for index, (_, end_char) in enumerate(offsets)
+                if end_char in char_boundaries
+            }
+        except (RuntimeError, ValueError, TypeError):
+            # Keep corpus creation robust for malformed/unparseable source files.
+            boundaries = set()
+    boundaries = sorted(boundaries)
     cursor = 0
     while cursor < len(ids):
-        end = min(cursor + max_tokens, len(ids))
+        limit = min(cursor + max_tokens, len(ids))
+        boundary_index = bisect_right(boundaries, limit) - 1
+        end = boundaries[boundary_index] if boundary_index >= 0 and boundaries[boundary_index] > cursor else limit
         while end > cursor:
             piece = tokenizer.decode(ids[cursor:end], clean_up_tokenization_spaces=False)
             # prepare_data appends EOS; retain one token of headroom for that marker.
@@ -46,7 +70,7 @@ def chunk_file(path: Path, tokenizer, max_tokens: int):
         if end <= cursor:
             cursor += 1
             continue
-        if len(tokenizer.encode(piece, add_special_tokens=False)) >= 8:
+        if ast_aware or len(tokenizer.encode(piece, add_special_tokens=False)) >= 8:
             yield piece
         cursor = end
 
@@ -83,6 +107,8 @@ def main():
         help="Optional comma-separated file extensions to include (for example .cs,.csproj).",
     )
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--chunking", choices=("token", "ast"), default="token",
+                     help="Use flat fixed token windows or C# syntax-boundary windows.")
     args = ap.parse_args()
     root = args.root.resolve()
     if not root.is_dir():
@@ -127,7 +153,8 @@ def main():
         seen_hashes.add(digest)
         category = "code" if path.suffix.lower() in CODE_SUFFIXES else "docs"
         split = "validation" if is_validation(path, root, args.validation_fraction) else "train"
-        chunks = list(chunk_file(path, tokenizer, max_tokens))
+        chunks = list(chunk_file(path, tokenizer, max_tokens,
+                                 ast_aware=args.chunking == "ast"))
         if chunks:
             relative = path.relative_to(root).as_posix()
             license_name = source_license(path, root)
@@ -163,6 +190,7 @@ def main():
         "purpose": "VQ-VAE tokenizer reconstruction only; not instruction-target generator data",
         "tokenizer": args.tokenizer,
         "sequence_length": args.sequence_length,
+        "chunking": args.chunking,
         "source_manifest": str((root / "SOURCES.tsv").resolve()),
         "file_counts": file_counts,
         "chunk_counts": counts,

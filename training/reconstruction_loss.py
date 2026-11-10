@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+import torch
+
 
 CSHARP_KEYWORDS = """abstract as base bool break byte case catch char checked class const
 continue decimal default delegate do double else enum event explicit extern false
@@ -43,3 +45,13 @@ def make_code_token_weights(tokenizer, vocab_size: int, syntax_weight: float,
             weights[token_id] = max(weights[token_id], float(identifier_weight))
 
     return weights
+
+
+def select_reconstruction_weights(targets, vocabulary_weights=None,
+                                 occurrence_weights=None):
+    """Choose cached per-position weights or fall back to vocabulary weights."""
+    if occurrence_weights is not None:
+        return occurrence_weights.to(device=targets.device, dtype=torch.float32)
+    if vocabulary_weights is not None:
+        return vocabulary_weights[targets]
+    return None

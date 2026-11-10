@@ -259,9 +259,9 @@ The 24 failing reconstructions contain both identifier damage (method and variab
 
 ### Controlled next experiments
 
-1. **Occurrence-aware lexical weighting (first training change).** Keep the best 4,096 model recipe fixed and change how token weights are assigned: use an actual C# lexer/parser to label each target occurrence as keyword/operator/delimiter, identifier, literal, or other, then map those spans to the tokenizer's offset ranges. Store those labels/weights with the prepared cache so weighting is per occurrence rather than per vocabulary ID. Preserve the unweighted validation metrics. Compare compile count, exact chunks, and class-specific accuracy against the 4,096 run. This tests whether the current heuristic assigns the right training emphasis; it does not add a new bypass path.
+1. **Occurrence-aware lexical weighting (implemented).** The trainer now accepts a `token_weights.bin` array with one weight per target position. For C# records, Tree-sitter labels syntax leaves and identifier/literal spans, then the fast tokenizer offset mapping transfers those labels to BPE positions. The static vocabulary-wide heuristic remains the default for old configs. The new flat-window config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code4096-decoder4-ctx128-occurrence-weighted-30k.yaml`; its cache paths are separate from the active codebook run. XML `.csproj` samples are retained with neutral weight 1.0. Compare compile count, exact chunks, and category-specific accuracy to the 4,096 baseline.
 
-2. **AST-aligned corpus segmentation (separate data ablation).** Keep the occurrence-weighting implementation fixed. Build chunks from complete C# syntax nodes, packing adjacent small nodes up to the 128-token limit and recursively splitting large nodes only at child-node boundaries. Keep the source-file hash split and deduplication rules. Report changed row counts and evaluate on the same held-out file set and the same compile stress suite. Keep `.csproj` as its own non-C#-AST path. This tests whether flat windows damage the structural contexts the codec must reconstruct.
+2. **AST-aligned corpus segmentation (separate data ablation).** Keep the occurrence-weighting implementation fixed. Use the new corpus-builder `--chunking ast` mode: end each chunk at the furthest named C# AST node end within the context budget; fall back to the token cap only if no AST boundary fits. This keeps chunks contiguous and prevents splitting identifiers or literals in the middle. Keep the source-file hash split and deduplication rules. Report changed row counts and evaluate on the same held-out file set and the same compile stress suite. Keep `.csproj` as its own non-C#-AST path. This tests whether flat windows damage the structural contexts the codec must reconstruct.
 
 3. **Compiler-aware candidate selection (inference-side experiment).** The current evaluator uses per-position argmax, which commits to one token at every position. For a separate held-out compile-development set, retain top-k token alternatives, search a bounded set of candidate sequences, and rank by model score plus C# compiler success. Freeze the search settings before applying them to the 48-snippet stress test. A compile pass does not prove that names or behavior are correct; compare exactness and behavioral tests too. Grammar/type constrained decoding and compiler feedback have improved compilability in code-generation studies, but they are not established results for this codec and need direct validation.
 
@@ -272,3 +272,27 @@ A pointer/copy mechanism is conceptually relevant to preserving exact identifier
 ### Decision order
 
 Finish and evaluate the 4,096-entry run first. If it improves stress compilation, retain it as the new capacity baseline. Then implement and measure occurrence-aware lexical labels as the next one-factor change. Test AST-aligned segmentation separately after that. Treat compiler-aware search as an inference experiment, tuned on a development set and reported separately from the codec's raw argmax reconstruction. Do not promise 48/48 until the fixed stress test measures it; include behavioral equivalence tests because changed identifiers can compile while changing the program's meaning.
+
+Implementation and run commands for the two controlled follow-ups:
+
+```bash
+# Experiment A: per-occurrence C# lexical weighting, retain flat token windows.
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code4096-decoder4-ctx128-occurrence-weighted-30k.yaml \
+  --stage tokenizer
+.venv/bin/python -m training.prepare_data \
+  --config config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code4096-decoder4-ctx128-occurrence-weighted-30k.yaml \
+  --stage tokenizer \
+  --input data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx128/validation.jsonl \
+  --cache-dir data/cache/godot-csharp-deepseek-coder-1.3b-strict-ctx128/tokenizer-occurrence-validation
+
+# Experiment B: add AST-aligned chunk boundaries while keeping occurrence weighting.
+.venv/bin/python -m training.build_reference_corpus \
+  --root data/reference \
+  --output data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx128-ast \
+  --tokenizer deepseek-ai/deepseek-coder-1.3b-base \
+  --sequence-length 128 --max-doc-fraction 0 \
+  --include-extensions .cs,.csproj --chunking ast
+```
+
+For Experiment B, prepare train and validation caches with `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code4096-decoder4-ctx128-ast-occurrence-weighted-30k.yaml`; its validation cache is `data/cache/godot-csharp-deepseek-coder-1.3b-strict-ctx128-ast/tokenizer-validation`. Train each experiment for 30,000 updates only after comparing the preceding run. The parser dependency is declared in `requirements.txt`; install/update project dependencies before running these commands.
