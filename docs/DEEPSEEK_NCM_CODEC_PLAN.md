@@ -243,15 +243,15 @@ No codec problem section has a verified final solution yet. The DeepSeek tokeniz
 
 The 128,000-step weighted DeepSeek run reached 95.55% best validation token accuracy and 24/48 compile passes on the 48-snippet stress set. The 100,000-step checkpoint scored 23/48 on the same stress set, with nearly identical token/chunk/similarity metrics. This is evidence that simply training longer was not enough; identifier and syntax token substitutions still cause many failures.
 
-The next experiment changes one model capacity variable: codebook entries per level rise from 512 to 4,096 (an eightfold increase). It keeps the tokenizer, corpus and file split, 64 quantizer levels, 128-token context, four decoder blocks, weighted reconstruction objective, optimizer, batch size, and checkpoint metric unchanged. It is capped at 30,000 steps for an initial capacity/throughput check. The config is `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code4096-decoder4-ctx128-weighted-30k.yaml`.
+The experiment changed one model capacity variable: codebook entries per level rose from 512 to 4,096 (an eightfold increase). It kept the tokenizer, corpus and file split, 64 quantizer levels, 128-token context, four decoder blocks, weighted reconstruction objective, optimizer, batch size, and checkpoint metric unchanged. It ran for 30,000 steps using `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code4096-decoder4-ctx128-weighted-30k.yaml`.
 
 4096 is a power-of-two codebook size, not a number of quantizer levels. This is a plausible test because many codebooks were close to/full utilization, but utilization alone does not prove the codebook is the limiting factor. Each nearest-code lookup becomes more expensive; expect lower throughput, so measure actual steps/second before extrapolating wall time. The code vectors themselves are not the main memory concern; distance computation is the likely cost.
 
-Use the same 128-token validation split and identical 48-snippet stress suite after training. Compare against the 512-entry run's step-30,000 checkpoint (if available) for a matched-update comparison, and also report the best validation-selected checkpoint. The decision metric is reconstructed compile passes, with token accuracy, exact-chunk rate, character similarity, validation reconstruction CE, utilization, VRAM, and throughput as supporting measurements. Do not infer a win from codebook utilization or training CE alone. If 4,096 entries do not improve syntax/identifier preservation or stress compilation, the next controlled change should target chunk/code-span supervision or boundary alignment rather than increasing codebook size again.
+On the same 128-token held-out split, the 4,096-entry run scored 95.53% token accuracy, 144/803 exact chunks (17.93%), and 94.69% character similarity. On the shared stress set it scored 22/48 reconstructed compiles. The 512-entry, 128k checkpoint scored 95.55%, 144/803 (17.93%), 95.09%, and 24/48 respectively. This comparison is not matched for training duration, so it does not prove that 4,096 entries are worse; it does show no observed gain over the longer 512-entry run. A 512-entry step-30,000 checkpoint remains the fair matched-update comparator. Do not infer a win from utilization or training CE alone.
 
 ## Follow-up after the 4,096-code ablation: target compile reliability
 
-Do not change the active 4,096-entry run. Its result should first tell us whether added discrete capacity helps at fixed context, decoder, data, and loss.
+The 4,096-entry run is complete. Its measured result does not establish a codebook-capacity benefit; retain 512 entries as the working comparison point until a matched-step evaluation says otherwise.
 
 ### What the failure inspection says
 
@@ -271,7 +271,7 @@ A pointer/copy mechanism is conceptually relevant to preserving exact identifier
 
 ### Decision order
 
-Finish and evaluate the 4,096-entry run first. If it improves stress compilation, retain it as the new capacity baseline. Then implement and measure occurrence-aware lexical labels as the next one-factor change. Test AST-aligned segmentation separately after that. Treat compiler-aware search as an inference experiment, tuned on a development set and reported separately from the codec's raw argmax reconstruction. Do not promise 48/48 until the fixed stress test measures it; include behavioral equivalence tests because changed identifiers can compile while changing the program's meaning.
+The 4,096-entry run has been evaluated and did not show a gain over the longer 512-entry checkpoint; complete the matched 30k comparison if the old checkpoint is available. The next requested experiment tests context 256 at 512 entries, followed by occurrence-aware weighting and AST-aligned segmentation as separate arms. Treat compiler-aware search as a later inference experiment, tuned on a development set and reported separately from the codec's raw argmax reconstruction. Do not promise 48/48 until the fixed stress test measures it; include behavioral equivalence tests because changed identifiers can compile while changing the program's meaning.
 
 Implementation and run commands for the two controlled follow-ups:
 
@@ -296,3 +296,139 @@ Implementation and run commands for the two controlled follow-ups:
 ```
 
 For Experiment B, prepare train and validation caches with `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code4096-decoder4-ctx128-ast-occurrence-weighted-30k.yaml`; its validation cache is `data/cache/godot-csharp-deepseek-coder-1.3b-strict-ctx128-ast/tokenizer-validation`. Train each experiment for 30,000 updates only after comparing the preceding run. The parser dependency is declared in `requirements.txt`; install/update project dependencies before running these commands.
+
+## Context-length and structure ablation — 256 tokens, 512 codes, 30k updates
+
+The completed 4,096-code run did not improve on the 512-code/128k checkpoint in the shared suite (22/48 versus 24/48), but that comparison used different update counts. Its held-out accuracy and exact-chunk count were effectively tied, while character similarity was slightly lower. The next question is whether moving from 128 to 256 context helps when levels, codebook size, decoder depth, loss recipe, optimizer, seed, and update budget are controlled.
+
+The requested comparison is three sequential 30,000-update runs at 64 quantizer levels, 512 entries per level, a four-block decoder, and context length 256:
+
+| Arm | Chunking | Reconstruction weighting | What it isolates |
+|---|---|---|---|
+| A: 256 flat baseline | Fixed token windows | Existing static token-piece weights (syntax 3.0, identifier 1.5) | Context 256 against the existing 128-context, 512-code step-30k checkpoint. |
+| B: occurrence-weighted | Same fixed windows as A | Per-occurrence C# syntax/identifier labels | Benefit of occurrence-aware weighting at context 256. |
+| C: AST + occurrence-weighted | End chunks at AST node boundaries where possible | Same per-occurrence weights as B | Additional effect of AST-aligned chunk boundaries. |
+
+All arms retain the same source files and stable file-hash split. Validation and the 48-snippet compile stress set remain held out. AST segmentation can change the number of training rows, so record row counts and estimated corpus passes; keeping 30,000 optimizer updates fixed does not make examples-seen identical for arm C. The 128-context comparator is the existing 512-code `step-00030000.pt` checkpoint from the original 128k run; use the same held-out source split and stress set.
+
+For context 256, the 64 quantizer resolutions are exactly twice the corresponding 128-context resolutions (`2, 6, 10, …, 250, 256`). This preserves the schedule's relative spacing while ending at the new context length; it does not change the number of levels. The three configs are:
+
+- `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx256-weighted-30k.yaml`
+- `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx256-occurrence-weighted-30k.yaml`
+- `config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx256-ast-occurrence-weighted-30k.yaml`
+
+Build the ordinary 256-token corpus once for arms A/B and an AST-chunked corpus for C. Prepare separate caches for each arm, then train sequentially on the single GPU. Run the same validation reconstruction and compile stress evaluation for the 128-context checkpoint and all three 256-context checkpoints. Do not use validation token accuracy as the only decision metric: prioritize exact reconstruction and stress compilation, and also report character similarity, compile diagnostics, VRAM, and throughput. This is an experiment plan, not a final-solution checkpoint.
+
+### Linux commands for the 256-context comparison
+
+Run from `~/src/ncm` after pulling this commit. The corpus builds use identical source files and the existing stable file-hash split; the AST version only changes chunk boundaries. The 128-context checkpoint is evaluated as the context baseline at the matched 30,000th update.
+
+```bash
+cd ~/src/ncm
+set -euo pipefail
+
+CFG_FLAT=config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx256-weighted-30k.yaml
+CFG_OCC=config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx256-occurrence-weighted-30k.yaml
+CFG_AST=config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx256-ast-occurrence-weighted-30k.yaml
+
+# Same files/split, ordinary fixed-width 256-token chunks.
+.venv/bin/python -m training.build_reference_corpus \
+  --root data/reference \
+  --output data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx256 \
+  --tokenizer deepseek-ai/deepseek-coder-1.3b-base \
+  --sequence-length 256 --max-doc-fraction 0 \
+  --include-extensions .cs,.csproj
+
+# Same files/split, AST-aligned 256-token C# chunks.
+.venv/bin/python -m training.build_reference_corpus \
+  --root data/reference \
+  --output data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx256-ast \
+  --tokenizer deepseek-ai/deepseek-coder-1.3b-base \
+  --sequence-length 256 --max-doc-fraction 0 \
+  --include-extensions .cs,.csproj --chunking ast
+
+# Build train caches for all arms.
+.venv/bin/python -m training.prepare_data --config "$CFG_FLAT" --stage tokenizer
+.venv/bin/python -m training.prepare_data --config "$CFG_OCC" --stage tokenizer
+.venv/bin/python -m training.prepare_data --config "$CFG_AST" --stage tokenizer
+
+# Build held-out caches, keeping every arm's cache isolated.
+.venv/bin/python -m training.prepare_data --config "$CFG_FLAT" --stage tokenizer \
+  --input data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx256/validation.jsonl \
+  --cache-dir data/cache/godot-csharp-deepseek-coder-1.3b-strict-ctx256/tokenizer-validation
+.venv/bin/python -m training.prepare_data --config "$CFG_OCC" --stage tokenizer \
+  --input data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx256/validation.jsonl \
+  --cache-dir data/cache/godot-csharp-deepseek-coder-1.3b-strict-ctx256/tokenizer-occurrence-validation
+.venv/bin/python -m training.prepare_data --config "$CFG_AST" --stage tokenizer \
+  --input data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx256-ast/validation.jsonl \
+  --cache-dir data/cache/godot-csharp-deepseek-coder-1.3b-strict-ctx256-ast/tokenizer-validation
+
+# Compare row counts and estimated passes before spending GPU time.
+for data_dir in \
+  data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx256 \
+  data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx256-ast; do
+  n=$(wc -l < "$data_dir/train.jsonl")
+  steps_per_pass=$(((n + 15) / 16))
+  printf '%s: train_rows=%s validation_rows=%s approx_passes_at_30k=' \
+    "$data_dir" "$n" "$(wc -l < "$data_dir/validation.jsonl")"
+  awk -v steps="$steps_per_pass" 'BEGIN { printf "%.1f\n", 30000 / steps }'
+done
+
+# Run one at a time on the GPU; each config has a distinct run and artifact path.
+.venv/bin/python -m training.train_tokenizer --config "$CFG_FLAT" --max-steps 30000
+.venv/bin/python -m training.train_tokenizer --config "$CFG_OCC" --max-steps 30000
+.venv/bin/python -m training.train_tokenizer --config "$CFG_AST" --max-steps 30000
+```
+
+In a second terminal, watch all three run logs. Runs that have not started yet will appear as pending:
+
+```bash
+cd ~/src/ncm
+.venv/bin/python scripts/watch_codec_tokenizer_screen.py \
+  --run ctx256-flat=runs/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx256-weighted-30k:30000 \
+  --run ctx256-occurrence=runs/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx256-occurrence-weighted-30k:30000 \
+  --run ctx256-ast-occurrence=runs/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx256-ast-occurrence-weighted-30k:30000 \
+  --interval 5
+```
+
+After training, evaluate the existing matched-step 128-context checkpoint and each 256-context artifact. Keep all four result directories separate:
+
+```bash
+OUT=runs/context256-codec-comparison
+STRESS=examples/godot_csharp_generator_pilot/codec_compile_stress.jsonl
+VAL128=data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx128/validation.jsonl
+VAL256=data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx256/validation.jsonl
+VAL256_AST=data/mycode/godot-csharp-deepseek-coder-1.3b-strict-ctx256-ast/validation.jsonl
+
+eval_codec() {
+  name="$1"; cfg="$2"; checkpoint="$3"; validation="$4"
+  mkdir -p "$OUT/$name/validation" "$OUT/$name/stress"
+  .venv/bin/python evaluation/godot_csharp_codec_eval.py \
+    --config "$cfg" --checkpoint "$checkpoint" \
+    --input "$validation" --text-key text --code-only \
+    --output "$OUT/$name/validation/reconstruction.jsonl"
+  .venv/bin/python evaluation/godot_csharp_codec_eval.py \
+    --config "$cfg" --checkpoint "$checkpoint" \
+    --input "$STRESS" --text-key target --compile \
+    --output "$OUT/$name/stress/compiled.jsonl"
+}
+
+eval_codec ctx128-512-step30k \
+  config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx128-weighted-128k.yaml \
+  runs/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx128-weighted-128k/checkpoints/step-00030000.pt \
+  "$VAL128"
+eval_codec ctx256-flat \
+  config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx256-weighted-30k.yaml \
+  artifacts/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx256-weighted-30k/tokenizer.pt \
+  "$VAL256"
+eval_codec ctx256-occurrence \
+  config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx256-occurrence-weighted-30k.yaml \
+  artifacts/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx256-occurrence-weighted-30k/tokenizer.pt \
+  "$VAL256"
+eval_codec ctx256-ast-occurrence \
+  config/train/godot-csharp-deepseek-coder-1.3b-strict-64level-code512-decoder4-ctx256-ast-occurrence-weighted-30k.yaml \
+  artifacts/godot-csharp-deepseek-coder-1.3b-strict/64level-code512-decoder4-ctx256-ast-occurrence-weighted-30k/tokenizer.pt \
+  "$VAL256_AST"
+```
+
+Compare held-out exact chunks and character similarity within the same source-file split, and stress compilation out of 48; inspect failure types as well. Token accuracy is tokenizer/context specific, so avoid interpreting its raw difference across sequence lengths as a pure quality change.
