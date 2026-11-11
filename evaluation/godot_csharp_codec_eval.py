@@ -8,6 +8,7 @@ from collections import defaultdict
 import difflib
 import hashlib
 import json
+import math
 from pathlib import Path
 import sys
 import time
@@ -102,6 +103,43 @@ def apply_exact_residual(prediction: list[int], payload: bytes) -> list[int]:
     return corrected
 
 
+def pack_codes(values: list[int], widths: list[int]) -> bytes:
+    if len(values) != len(widths):
+        raise ValueError("code count does not match level configuration")
+    out = bytearray()
+    buffer = bits = 0
+    for value, width in zip(values, widths):
+        if value < 0 or value >= 1 << width:
+            raise ValueError("code index is out of range")
+        buffer |= value << bits
+        bits += width
+        while bits >= 8:
+            out.append(buffer & 255)
+            buffer >>= 8
+            bits -= 8
+    if bits:
+        out.append(buffer)
+    return bytes(out)
+
+
+def unpack_codes(payload: bytes, widths: list[int]) -> list[int]:
+    result = []
+    buffer = bits = offset = 0
+    for width in widths:
+        while bits < width:
+            if offset >= len(payload):
+                raise ValueError("truncated code payload")
+            buffer |= payload[offset] << bits
+            offset += 1
+            bits += 8
+        result.append(buffer & ((1 << width) - 1))
+        buffer >>= width
+        bits -= width
+    if offset != len(payload) or buffer:
+        raise ValueError("unexpected code payload padding")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -128,6 +166,8 @@ def main():
                         help="Compile original and reconstructed snippets; never executes them.")
     parser.add_argument("--exact-residual", action="store_true",
                         help="Measure a lossless token correction sidecar for known input text.")
+    parser.add_argument("--measure-packed", action="store_true",
+                        help="Pack VQ codes, verify unpacking and measure decode time; requires --exact-residual.")
     parser.add_argument(
         "--compare-report", default="",
         help="Optional prior .report.json from the same input for a concise before/after comparison.",
@@ -138,6 +178,8 @@ def main():
     )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
+    if args.measure_packed and not args.exact_residual:
+        parser.error("--measure-packed requires --exact-residual")
 
     cfg = OmegaConf.load(repo_path(args.config))
     OmegaConf.resolve(cfg)
@@ -180,6 +222,11 @@ def main():
     residual_compile_passes = 0
     input_bytes = 0
     truncated_inputs = 0
+    packed_bytes = framing_bytes = 0
+    decode_seconds = residual_apply_seconds = 0.0
+    widths = [max(1, math.ceil(math.log2(int(vocab))))
+              for length, vocab in zip(model.vq.levels, model.vq.vqvae_vocab_sizes)
+              for _ in range(int(length))] if args.measure_packed else []
     extension_stats = defaultdict(lambda: {"examples": 0, "valid_tokens": 0,
                                            "correct_tokens": 0, "exact_sequences": 0})
     started = time.perf_counter()
@@ -216,11 +263,24 @@ def main():
 
         with torch.inference_mode():
             codes = model.encode(tokens)
+            if args.measure_packed:
+                packed = [pack_codes(row, widths) for row in codes.cpu().tolist()]
+                unpacked = [unpack_codes(row, widths) for row in packed]
+                if unpacked != codes.cpu().tolist():
+                    raise AssertionError("packed VQ codes failed to round-trip")
+                codes = torch.tensor(unpacked, dtype=codes.dtype, device=device)
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                decode_started = time.perf_counter()
             logits = model.decode(codes)
             predictions = logits.argmax(dim=-1).tolist()
+            if args.measure_packed:
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                decode_seconds += time.perf_counter() - decode_started
 
-        for (record, text, extension), padded_ids, mask, predicted_ids in zip(
-                batch, padded_batch, masks, predictions):
+        for row_index, ((record, text, extension), padded_ids, mask, predicted_ids) in enumerate(zip(
+                batch, padded_batch, masks, predictions)):
             valid_count = sum(mask)
             valid_truth = padded_ids[:valid_count]
             valid_prediction = predicted_ids[:valid_count]
@@ -256,7 +316,19 @@ def main():
             }
             if args.exact_residual:
                 payload = exact_residual(valid_truth, valid_prediction)
+                apply_started = time.perf_counter()
                 corrected_ids = apply_exact_residual(valid_prediction, payload)
+                if args.measure_packed:
+                    residual_apply_seconds += time.perf_counter() - apply_started
+                    code_bytes = len(packed[row_index])
+                    header_bytes = len(_varint(valid_count)) + len(_varint(len(payload)))
+                    packed_bytes += code_bytes
+                    framing_bytes += header_bytes
+                    result_row["packed_measurement"] = {
+                        "vq_code_bytes": code_bytes,
+                        "framing_bytes": header_bytes,
+                        "total_bytes_with_residual": code_bytes + header_bytes + len(payload),
+                    }
                 corrected_text = visible_text(tokenizer, corrected_ids, eos_id, pad_id)
                 if corrected_ids != valid_truth:
                     raise AssertionError("residual failed to restore original token IDs")
@@ -353,6 +425,21 @@ def main():
         ),
     }
     report_path = output_path.with_suffix(".report.json")
+    if args.measure_packed:
+        total = packed_bytes + residual_bytes + framing_bytes
+        report["packed_measurement"] = {
+            "vq_code_bytes": packed_bytes,
+            "residual_bytes": residual_bytes,
+            "framing_bytes": framing_bytes,
+            "total_bytes": total,
+            "input_utf8_bytes": input_bytes,
+            "total_to_input_ratio": total / max(1, input_bytes),
+            "decode_and_argmax_seconds": decode_seconds,
+            "residual_apply_seconds": residual_apply_seconds,
+            "decode_batch_size": args.batch_size,
+            "timing_scope": "VQ decode and argmax with GPU synchronization, excluding code unpacking, text decoding, encoding and compilation; residual application measured separately on CPU",
+            "size_scope": "fixed-width bit-packed code indices plus per-record valid length, residual length and residual; excludes shared model/config and container metadata",
+        }
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2), flush=True)
     print("\n=== Human-readable codec summary ===")
@@ -425,6 +512,12 @@ def main():
         if truncated_inputs:
             print(f"Truncated inputs: {truncated_inputs}; residual cannot recover omitted text")
         print("This is an exact correction sidecar for known inputs, not a generation result.")
+    if args.measure_packed:
+        measure = report["packed_measurement"]
+        print(f"Packed VQ codes: {packed_bytes} bytes; residual: {residual_bytes} bytes; framing: {framing_bytes} bytes")
+        print(f"Total encoded: {measure['total_bytes']} bytes / {input_bytes} original UTF-8 bytes ({measure['total_to_input_ratio']:.2f}x)")
+        print(f"VQ decode + argmax: {decode_seconds:.3f}s; CPU residual apply: {residual_apply_seconds:.3f}s")
+        print("Shared model/config and container metadata are excluded; timing excludes code unpacking and text decoding.")
     print(f"Detailed rows: {output_path}")
     print(f"Full report:   {report_path}", flush=True)
 
