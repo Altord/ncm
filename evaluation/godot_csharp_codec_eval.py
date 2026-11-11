@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from collections import defaultdict
 import difflib
 import hashlib
@@ -43,6 +44,64 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _varint(value: int) -> bytes:
+    if value < 0:
+        raise ValueError("varint value must be nonnegative")
+    output = bytearray()
+    while value >= 128:
+        output.append((value & 127) | 128)
+        value >>= 7
+    output.append(value)
+    return bytes(output)
+
+
+def _read_varint(payload: bytes, offset: int) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    while offset < len(payload):
+        byte = payload[offset]
+        offset += 1
+        value |= (byte & 127) << shift
+        if not byte & 128:
+            return value, offset
+        shift += 7
+        if shift > 63:
+            raise ValueError("residual varint is too long")
+    raise ValueError("truncated residual varint")
+
+
+def exact_residual(truth: list[int], prediction: list[int]) -> bytes:
+    """Encode count, then position deltas and original token IDs for mismatches."""
+    if len(truth) != len(prediction):
+        raise ValueError("truth and prediction lengths differ")
+    errors = [(position, token_id) for position, (token_id, guess) in
+              enumerate(zip(truth, prediction)) if token_id != guess]
+    payload = bytearray(_varint(len(errors)))
+    previous = -1
+    for position, token_id in errors:
+        payload.extend(_varint(position - previous))
+        payload.extend(_varint(token_id))
+        previous = position
+    return bytes(payload)
+
+
+def apply_exact_residual(prediction: list[int], payload: bytes) -> list[int]:
+    corrected = prediction.copy()
+    count, offset = _read_varint(payload, 0)
+    previous = -1
+    for _ in range(count):
+        delta, offset = _read_varint(payload, offset)
+        token_id, offset = _read_varint(payload, offset)
+        position = previous + delta
+        if delta < 1 or position >= len(corrected):
+            raise ValueError("invalid residual position")
+        corrected[position] = token_id
+        previous = position
+    if offset != len(payload):
+        raise ValueError("trailing bytes in residual")
+    return corrected
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -67,6 +126,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--compile", action="store_true",
                         help="Compile original and reconstructed snippets; never executes them.")
+    parser.add_argument("--exact-residual", action="store_true",
+                        help="Measure a lossless token correction sidecar for known input text.")
     parser.add_argument(
         "--compare-report", default="",
         help="Optional prior .report.json from the same input for a concise before/after comparison.",
@@ -113,6 +174,12 @@ def main():
     total_correct = 0
     total_exact = 0
     total_char_similarity = 0.0
+    residual_bytes = 0
+    residual_token_errors = 0
+    residual_exact_texts = 0
+    residual_compile_passes = 0
+    input_bytes = 0
+    truncated_inputs = 0
     extension_stats = defaultdict(lambda: {"examples": 0, "valid_tokens": 0,
                                            "correct_tokens": 0, "exact_sequences": 0})
     started = time.perf_counter()
@@ -187,6 +254,26 @@ def main():
                 "token_exact_match": exact,
                 "character_similarity": similarity,
             }
+            if args.exact_residual:
+                payload = exact_residual(valid_truth, valid_prediction)
+                corrected_ids = apply_exact_residual(valid_prediction, payload)
+                corrected_text = visible_text(tokenizer, corrected_ids, eos_id, pad_id)
+                if corrected_ids != valid_truth:
+                    raise AssertionError("residual failed to restore original token IDs")
+                error_count = valid_count - correct
+                encoded_bytes = len(text.encode("utf-8"))
+                residual_bytes += len(payload)
+                residual_token_errors += error_count
+                input_bytes += encoded_bytes
+                residual_exact_texts += corrected_text == text
+                truncated_inputs += source_text != text
+                result_row["exact_residual"] = {
+                    "payload_base64": base64.b64encode(payload).decode("ascii"),
+                    "binary_bytes": len(payload),
+                    "changed_tokens": error_count,
+                    "restored_text_exact": corrected_text == text,
+                    "input_utf8_bytes": encoded_bytes,
+                }
             if args.compile:
                 result_row["original_compile"] = compile_candidate(text, args.dotnet_framework)
                 result_row["reconstruction_compile"] = compile_candidate(
@@ -194,6 +281,15 @@ def main():
                 ) if reconstructed_text.strip() else {
                     "status": "empty", "detail": "codec reconstructed no code",
                 }
+                if args.exact_residual:
+                    result_row["residual_compile"] = compile_candidate(
+                        corrected_text, args.dotnet_framework,
+                    ) if corrected_text.strip() else {
+                        "status": "empty", "detail": "residual restored no code",
+                    }
+                    residual_compile_passes += (
+                        result_row["residual_compile"]["status"] == "passed"
+                    )
             output_rows.append(result_row)
 
     output_path = repo_path(args.output)
@@ -230,6 +326,17 @@ def main():
             row.get("reconstruction_compile", {}).get("status") == "unavailable"
             for row in output_rows
         ),
+        "exact_residual": ({
+            "scope": "known-input round trip only; generator outputs have no source-token sidecar",
+            "binary_bytes": residual_bytes,
+            "input_utf8_bytes": input_bytes,
+            "residual_to_input_byte_ratio": residual_bytes / max(1, input_bytes),
+            "changed_tokens": residual_token_errors,
+            "restored_text_exact": residual_exact_texts,
+            "truncated_inputs": truncated_inputs,
+            "restored_compile_passes": residual_compile_passes if args.compile else None,
+            "format": "varint error count, then varint position deltas and original token IDs",
+        } if args.exact_residual else None),
         "by_extension": {
             ext: {
                 **stats,
@@ -305,6 +412,19 @@ def main():
             print("Compile gate: every reconstructed pilot snippet compiled.")
     else:
         print("Compile: not run; use --compile for the pilot syntax check.")
+    if args.exact_residual:
+        residual = report["exact_residual"]
+        print(
+            f"Exact residual: {residual['changed_tokens']} token corrections, "
+            f"{residual['binary_bytes']} binary bytes "
+            f"({residual['residual_to_input_byte_ratio']:.1%} of input UTF-8 bytes)"
+        )
+        print(f"Restored text: {residual['restored_text_exact']}/{report['examples']}")
+        if args.compile:
+            print(f"Restored compile: {residual_compile_passes}/{report['examples']}")
+        if truncated_inputs:
+            print(f"Truncated inputs: {truncated_inputs}; residual cannot recover omitted text")
+        print("This is an exact correction sidecar for known inputs, not a generation result.")
     print(f"Detailed rows: {output_path}")
     print(f"Full report:   {report_path}", flush=True)
 
