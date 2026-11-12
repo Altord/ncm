@@ -246,10 +246,12 @@ class MultiscaleResidualVectorQuantizer(VectorQuantizerBaseClass):
         kmeans_init=False,
         kmeans_iters=10,
         pre_quant_norm_type='group',
+        distance_fp32=False,
         aux=None,
     ):
         super().__init__()
         self.embed_dim = embed_dim
+        self.distance_fp32 = bool(distance_fp32)
         self.commitment_cost = commitment_cost
         self.epsilon = epsilon
         self.ema_scale_by_world_size = bool(ema_scale_by_world_size)
@@ -386,6 +388,14 @@ class MultiscaleResidualVectorQuantizer(VectorQuantizerBaseClass):
         return h_BCL.transpose(-1, -2).contiguous()
 
     def _distances(self, flat_input, emb_w):
+        if self.distance_fp32:
+            # Autocast otherwise reduces the precision of the dot product even
+            # when the input and codebook tensors themselves are float32.
+            with torch.autocast(device_type=flat_input.device.type, enabled=False):
+                x = flat_input.float()
+                e = emb_w.float()
+                return (torch.sum(x**2, dim=1, keepdim=True)
+                        + torch.sum(e**2, dim=1) - 2 * torch.matmul(x, e.t()))
         return (
             torch.sum(flat_input**2, dim=1, keepdim=True)
             + torch.sum(emb_w**2, dim=1)
