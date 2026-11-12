@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from pathlib import Path
 import time
@@ -21,19 +22,29 @@ from training.data import load_base_tokenizer
 from training.reconstruction_loss import make_code_token_weights, select_reconstruction_weights
 
 
-def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=True):
+def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=True,
+                      hard_fraction=0.25, hard_mix=0.0):
     """Return unweighted CE for reporting and (optionally) weighted train CE."""
     per_token = F.cross_entropy(logits.float().transpose(1, 2), targets,
                                 reduction="none")
     valid_weights = valid.to(per_token.dtype) if mask_padding else torch.ones_like(per_token)
     raw_ce = (per_token * valid_weights).sum() / valid_weights.sum().clamp_min(1)
-    if token_weights is None:
-        return raw_ce, raw_ce
+    if not 0 < hard_fraction <= 1 or not 0 <= hard_mix <= 1:
+        raise ValueError('hard_fraction must be in (0, 1] and hard_mix in [0, 1]')
     weights = token_weights
-    if weights.ndim == 1:
+    if weights is not None and weights.ndim == 1:
         weights = weights[targets]
-    combined_weights = weights * valid_weights
+    combined_weights = valid_weights if weights is None else weights * valid_weights
     weighted_ce = (per_token * combined_weights).sum() / combined_weights.sum().clamp_min(1)
+    if hard_mix:
+        denominators = combined_weights.sum(dim=1)
+        valid_rows = denominators > 0
+        if valid_rows.any():
+            row_loss = ((per_token * combined_weights).sum(dim=1) /
+                        denominators.clamp_min(1))[valid_rows]
+            k = max(1, math.ceil(row_loss.numel() * hard_fraction))
+            hard_ce = row_loss.topk(k).values.mean()
+            weighted_ce = (1 - hard_mix) * weighted_ce + hard_mix * hard_ce
     return raw_ce, weighted_ce
 
 
@@ -86,6 +97,14 @@ def main():
     eval_every = int(cfg.train.get("eval_every", save_every))
     mask_padding = bool(cfg.train.get("mask_padding", True))
     vq_weight = float(cfg.train.get("vq_loss_weight", 1.0))
+    hard_cfg = cfg.train.get('hard_examples', {})
+    hard_mix = float(hard_cfg.get('mix', 0.0))
+    hard_fraction = float(hard_cfg.get('fraction', 0.25))
+    if not 0 <= hard_mix <= 1 or not 0 < hard_fraction <= 1:
+        raise ValueError('hard_examples mix must be in [0, 1] and fraction in (0, 1]')
+    if hard_mix:
+        print(f'Hard-example loss: top {hard_fraction:.0%} of nonempty training chunks; '
+              f'blend={hard_mix:.0%}. Validation is unweighted.', flush=True)
     weight_cfg = cfg.train.get("reconstruction_token_weights", None)
     token_weights = None
     occurrence_weighting = bool(
@@ -216,7 +235,8 @@ def main():
                     x, token_weights, occurrence_weights
                 )
                 ce, train_ce = reconstruction_ce(
-                    logits, x, valid, reconstruction_weights, mask_padding
+                    logits, x, valid, reconstruction_weights, mask_padding,
+                    hard_fraction=hard_fraction, hard_mix=hard_mix,
                 )
                 loss = train_ce + vq_weight * vq_loss.float()
             last_util = {"per_level_codebook_utilization": per_level_util,
