@@ -1,5 +1,7 @@
 # DeepSeek NCM codec plan: Godot and C#
 
+> **Current status, 2026-11-11:** The recipe and commands below include historical plans and may describe completed work as pending. For the current experiment, completed results, tradeoffs, and evidence limits, see [NCM codec experiment history](NCM_CODEC_EXPERIMENT_HISTORY.md). Final-solution checkpoints remain in the separate checkpoint history below.
+
 ## Purpose
 
 This document is the working record for the selected code-tokenizer codec and its next experiments. It separates observed results from project decisions and hypotheses. Keep interim findings in the active investigation section. Add a checkpoint only after the problem section has a verified solution; do not label experiments or partial findings as checkpoints.
