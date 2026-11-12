@@ -164,6 +164,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--compile", action="store_true",
                         help="Compile original and reconstructed snippets; never executes them.")
+    parser.add_argument("--progress", action="store_true",
+                        help="Print progress and an estimated remaining time after each example.")
     parser.add_argument("--exact-residual", action="store_true",
                         help="Measure a lossless token correction sidecar for known input text.")
     parser.add_argument("--measure-packed", action="store_true",
@@ -363,6 +365,12 @@ def main():
                         result_row["residual_compile"]["status"] == "passed"
                     )
             output_rows.append(result_row)
+            if args.progress:
+                done = len(output_rows)
+                elapsed = time.perf_counter() - started
+                remaining = elapsed / done * (len(records) - done)
+                print(f"Progress: {done}/{len(records)} ({100 * done / len(records):.1f}%); "
+                      f"elapsed {elapsed:.1f}s; estimated remaining {remaining:.1f}s", flush=True)
 
     output_path = repo_path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
