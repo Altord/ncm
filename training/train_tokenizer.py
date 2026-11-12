@@ -23,7 +23,7 @@ from training.reconstruction_loss import make_code_token_weights, select_reconst
 
 
 def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=True,
-                      hard_fraction=0.25, hard_mix=0.0):
+                      hard_fraction=0.25, hard_mix=0.0, focal_gamma=0.0):
     """Return unweighted CE for reporting and (optionally) weighted train CE."""
     per_token = F.cross_entropy(logits.float().transpose(1, 2), targets,
                                 reduction="none")
@@ -31,16 +31,20 @@ def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=T
     raw_ce = (per_token * valid_weights).sum() / valid_weights.sum().clamp_min(1)
     if not 0 < hard_fraction <= 1 or not 0 <= hard_mix <= 1:
         raise ValueError('hard_fraction must be in (0, 1] and hard_mix in [0, 1]')
+    if not math.isfinite(focal_gamma) or focal_gamma < 0:
+        raise ValueError('focal_gamma must be finite and nonnegative')
     weights = token_weights
     if weights is not None and weights.ndim == 1:
         weights = weights[targets]
     combined_weights = valid_weights if weights is None else weights * valid_weights
-    weighted_ce = (per_token * combined_weights).sum() / combined_weights.sum().clamp_min(1)
+    training_token_loss = (per_token * (-torch.expm1(-per_token)).pow(focal_gamma)
+                           if focal_gamma else per_token)
+    weighted_ce = (training_token_loss * combined_weights).sum() / combined_weights.sum().clamp_min(1)
     if hard_mix:
         denominators = combined_weights.sum(dim=1)
         valid_rows = denominators > 0
         if valid_rows.any():
-            row_loss = ((per_token * combined_weights).sum(dim=1) /
+            row_loss = ((training_token_loss * combined_weights).sum(dim=1) /
                         denominators.clamp_min(1))[valid_rows]
             k = max(1, math.ceil(row_loss.numel() * hard_fraction))
             hard_ce = row_loss.topk(k).values.mean()
@@ -98,6 +102,11 @@ def main():
     mask_padding = bool(cfg.train.get("mask_padding", True))
     vq_weight = float(cfg.train.get("vq_loss_weight", 1.0))
     hard_cfg = cfg.train.get('hard_examples', {})
+    focal_gamma = float(cfg.train.get('focal_gamma', 0.0))
+    if not math.isfinite(focal_gamma) or focal_gamma < 0:
+        raise ValueError('train.focal_gamma must be finite and nonnegative')
+    if focal_gamma:
+        print(f'Token focal loss enabled: gamma={focal_gamma}; validation remains unweighted CE.', flush=True)
     hard_mix = float(hard_cfg.get('mix', 0.0))
     hard_fraction = float(hard_cfg.get('fraction', 0.25))
     if not 0 <= hard_mix <= 1 or not 0 < hard_fraction <= 1:
@@ -236,7 +245,7 @@ def main():
                 )
                 ce, train_ce = reconstruction_ce(
                     logits, x, valid, reconstruction_weights, mask_padding,
-                    hard_fraction=hard_fraction, hard_mix=hard_mix,
+                    hard_fraction=hard_fraction, hard_mix=hard_mix, focal_gamma=focal_gamma,
                 )
                 loss = train_ce + vq_weight * vq_loss.float()
             last_util = {"per_level_codebook_utilization": per_level_util,
