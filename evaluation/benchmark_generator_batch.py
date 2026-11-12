@@ -25,6 +25,8 @@ def main():
     p.add_argument('--device', default='cuda')
     p.add_argument('--precision', choices=['bf16', 'fp32'], default='bf16')
     p.add_argument('--batch-size', type=int, default=1)
+    p.add_argument('--predict-level0', action='store_true',
+                   help='Include prompt-conditioned level-0 prediction and loss')
     p.add_argument('--output', required=True)
     args = p.parse_args()
     if args.batch_size < 1:
@@ -44,7 +46,7 @@ def main():
         raise ValueError('Expected at least two manually configured VQ levels')
     model_cfg.vocab_size = vocabs[1:]
     model_cfg.query_level0 = False
-    model_cfg.predict_level0 = False
+    model_cfg.predict_level0 = args.predict_level0
     model_cfg.prefix_pad_token_id = 0
     positions = int(model_cfg.prefix_len) + sum(levels[1:])
     report = dict(status='started', codec_checkpoint=str(Path(args.checkpoint).resolve()),
@@ -52,10 +54,11 @@ def main():
                   positions=positions, levels=len(levels), dense_mask_mib=positions**2*4/1024**2,
                   generator_width=int(model_cfg.n_embd), generator_layers=int(model_cfg.n_layer),
                   generator_attention_heads=int(model_cfg.n_head),
-                  attention_pattern=str(model_cfg.attn_pattern),
+                  attention_pattern=str(model_cfg.attn_pattern), predict_level0=args.predict_level0,
                   note='Random synthetic VQ indices and prompt; randomly initialized pilot generator; '
                        'one forward/backward/optimizer step, no checkpoint and no quality measurement. '
-                       'Excludes data preparation and codec encoding. Level 0 is not predicted.')
+                       'Excludes data preparation, codec encoding and generation. '
+                       'Initial level is predicted only when predict_level0 is true.')
     stage = 'load codec'
     start = time.perf_counter()
     if dev.type == 'cuda':
@@ -85,7 +88,7 @@ def main():
                                    (args.batch_size, int(model_cfg.prefix_len)), device=dev)
             target_vecs = codec.vq.idx_to_ncm_input(codes)
             inputs = torch.cat([codec.encoder.wte(prefix), target_vecs], dim=1)
-            labels = codes[:, levels[0]:]
+            labels = codes if args.predict_level0 else codes[:, levels[0]:]
             prefix_pad_mask = torch.zeros_like(prefix, dtype=torch.bool)
         if dev.type == 'cuda':
             torch.cuda.synchronize(dev)
@@ -96,7 +99,8 @@ def main():
             if logits.shape[1] != labels.shape[1]:
                 raise RuntimeError(f'logit/label length mismatch: {logits.shape[1]} vs {labels.shape[1]}')
             losses, offset = [], 0
-            for n, v in zip(levels[1:], vocabs[1:]):
+            first = 0 if args.predict_level0 else 1
+            for n, v in zip(levels[first:], vocabs[first:]):
                 part = logits[:, offset:offset+n, :v].float()
                 losses.append(F.cross_entropy(part.reshape(-1, v), labels[:, offset:offset+n].reshape(-1)))
                 offset += n
