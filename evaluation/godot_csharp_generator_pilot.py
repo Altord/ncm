@@ -186,13 +186,14 @@ def main():
 
     inference = checkpoint.get("inference", {})
     level0_probs = inference.get("level0_unigram")
-    if level0_probs is None:
-        raise SystemExit("Generator artifact has no inference.level0_unigram bootstrap")
-    level0_probs = torch.as_tensor(level0_probs, dtype=torch.float32, device=device)
-    level0_probs = level0_probs.clamp_min(0)
-    if level0_probs.numel() != int(vqvae.vq.vqvae_vocab_sizes[0]) or level0_probs.sum() <= 0:
-        raise SystemExit("Generator artifact has an invalid level-0 unigram")
-    level0_probs = level0_probs / level0_probs.sum()
+    if not (model.predict_level0 or model.query_level0):
+        if level0_probs is None:
+            raise SystemExit("Generator artifact has no inference.level0_unigram bootstrap")
+        level0_probs = torch.as_tensor(level0_probs, dtype=torch.float32, device=device)
+        level0_probs = level0_probs.clamp_min(0)
+        if level0_probs.numel() != int(vqvae.vq.vqvae_vocab_sizes[0]) or level0_probs.sum() <= 0:
+            raise SystemExit("Generator artifact has an invalid level-0 unigram")
+        level0_probs = level0_probs / level0_probs.sum()
 
     records = read_jsonl(repo_path(args.input))
     prefix_length = int(cfg.model.prefix_len)
@@ -218,7 +219,8 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
         level0_length = int(vqvae.vq.levels[0])
-        level0 = torch.multinomial(level0_probs, level0_length, replacement=True).view(1, -1)
+        level0 = (None if model.predict_level0 or model.query_level0 else
+                  torch.multinomial(level0_probs, level0_length, replacement=True).view(1, -1))
 
         with torch.inference_mode():
             codes = model.generate(
@@ -253,6 +255,8 @@ def main():
                 if candidate.strip() else {"status": "empty", "detail": "model emitted no code"}
             )
         output_rows.append(row)
+        print(f"Generated {len(output_rows)}/{len(records)} examples; "
+              f"elapsed {time.perf_counter() - started:.1f}s", flush=True)
 
     output_path = repo_path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
