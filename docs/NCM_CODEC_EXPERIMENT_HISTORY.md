@@ -106,6 +106,8 @@ The requested `gfx1200_16.HIP.fdb.txt` was not present and was not listed in any
 
 **Two-candidate saved-result selector:** Preferring width 128 and falling back to width 192 only when the former failed compilation selected 40/48 compiling and 34/48 exact reconstructions. At least one of the two was exact in 37/48, but identifying that upper bound requires the original target. Width 128 alone gave 36/48 compiling and 33/48 exact. These are known-input codec reconstructions; producing two unknown-target latent sequences, their actual cost and their selection accuracy for generated code have not been tested. Two full code streams total 16,388 fixed-layout indices before any deduplication.
 
+**Pending generator feasibility test:** `evaluation/benchmark_generator_batch.py` loads a saved codec, builds a randomly initialized generator from the small existing pilot settings adapted to its VQ levels, and runs one synthetic batch including forward, per-level loss, backward and AdamW step. It records wall time and GPU peak allocated/reserved memory, does not predict level 0, saves no trained checkpoint, and does not test generation quality, data preparation or codec encoding. It may consume substantial host and GPU memory for a dense 8,208-position mask. The full Linux GPU result is pending; only a small CPU end-to-end smoke test has passed.
+
 ## Research: paths beyond tuning codec settings
 
 See [VQ position reduction research](VQ_POSITION_REDUCTION_RESEARCH.md) for the subsequent focused investigation of compact latent representations, adaptive allocation, quantization methods and later lossless index coding.
