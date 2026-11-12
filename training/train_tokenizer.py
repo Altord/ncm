@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import time
 
+# Set before importing torch. Explicit user settings, including 0, take priority.
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
@@ -52,6 +55,9 @@ def main():
 
     seed_all(int(cfg.train.seed))
     device = device_from(str(cfg.train.device))
+    if torch.version.hip:
+        print("ROCm experimental AOTriton attention setting: "
+              + os.environ["TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"], flush=True)
     run = Run(cfg, "tokenizer", args.config)
     loader = make_loader(cfg.data.cache_dir, cfg.train.batch_size,
                          cfg.train.num_workers, True, cfg.train.seed)

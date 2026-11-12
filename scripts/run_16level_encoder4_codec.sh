@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL="${TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL:-1}"
 RUN=runs/godot-csharp-deepseek-coder-1.3b-strict/16level-code512-decoder4-ctx256-encoder4-ast-occurrence-30k
 ARTIFACT=artifacts/godot-csharp-deepseek-coder-1.3b-strict/16level-code512-decoder4-ctx256-encoder4-ast-occurrence-30k
 OUT=runs/context256-codec-comparison/compact-16level-encoder4

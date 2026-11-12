@@ -539,14 +539,17 @@ class MultiscaleResidualVectorQuantizer(VectorQuantizerBaseClass):
             vq_loss = torch.stack(vq_loss_per_level).mean()
         z_hat = z + (z_hat - z).detach()
 
-        per_level_codebook_utilization = [
-            torch.sum(getattr(self, f'codebook_hit_{i}')).item() / self.vqvae_vocab_sizes[i]
+        # Transfer all counters together: per-level .item() forced a GPU/CPU
+        # synchronization for every quantizer level on every training step.
+        hit_counts = torch.stack([
+            torch.sum(getattr(self, f'codebook_hit_{i}'))
             for i in range(num_levels)
+        ]).tolist()
+        per_level_codebook_utilization = [
+            count / size for count, size in zip(hit_counts, self.vqvae_vocab_sizes)
         ]
         total_slots = sum(self.vqvae_vocab_sizes)
-        used_slots = sum(
-            torch.sum(getattr(self, f'codebook_hit_{i}')).item() for i in range(num_levels)
-        )
+        used_slots = sum(hit_counts)
         global_codebook_utilization = used_slots / total_slots
 
         return (

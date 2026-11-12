@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import platform
 import random
 import shutil
@@ -62,6 +63,7 @@ class Run:
             "python": platform.python_version(), "platform": platform.platform(),
             "pytorch": str(torch.__version__), "cuda_runtime": torch.version.cuda,
             "rocm_runtime": getattr(torch.version, "hip", None),
+            "rocm_aotriton_experimental": os.environ.get("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"),
             "device": str(cfg.train.device),
             "gpu": (torch.cuda.get_device_name(0) if torch.cuda.is_available() else None),
         }, indent=2), encoding="utf-8")
