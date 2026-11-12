@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import math
 from pathlib import Path
@@ -44,6 +45,7 @@ def main():
     widths = [max(1, math.ceil(math.log2(int(vocab))))
               for length, vocab in zip(model.vq.levels, model.vq.vqvae_vocab_sizes)
               for _ in range(int(length))]
+    level_counts = [Counter() for _ in model.vq.levels]
     records = []
     for row in iter_records(Path(args.input), 'jsonl'):
         if args.code_only and Path(str(row.get('source', ''))).suffix.lower() not in ('.cs', '.csproj'):
@@ -73,6 +75,10 @@ def main():
                 totals['raw_zlib_bytes'] += len(zlib.compress(data))
             rows = model.encode(torch.tensor(padded, device=device, dtype=torch.long)).cpu().tolist()
             for indices in rows:
+                offset = 0
+                for level, counts in zip(model.vq.levels, level_counts):
+                    counts.update(indices[offset:offset + int(level)])
+                    offset += int(level)
                 fixed = pack_codes(indices, widths)
                 start = time.perf_counter()
                 compressed = zlib.compress(fixed)
@@ -87,15 +93,27 @@ def main():
                 totals['compressed_index_framing_bytes'] += len(_varint(len(compressed)))
             print(f'Processed {min(begin + len(chunk), len(records))}/{len(records)} records', flush=True)
     total = totals['compressed_index_payload_bytes'] + totals['compressed_index_framing_bytes']
+    levels = []
+    ideal_bits_per_chunk = 0.0
+    for length, vocab, counts in zip(model.vq.levels, model.vq.vqvae_vocab_sizes, level_counts):
+        n = sum(counts.values())
+        entropy = -sum((count / n) * math.log2(count / n) for count in counts.values()) if n else 0.0
+        ideal_bits_per_chunk += int(length) * entropy
+        levels.append(dict(positions=int(length), vocabulary_size=int(vocab),
+                           observed_symbols=len(counts), samples=n, entropy_bits_per_index=entropy))
     report = dict(input=args.input, input_sha256=file_sha256(Path(args.input)),
                   checkpoint=args.checkpoint, examples=len(records), indices_per_chunk=len(widths),
                   device=str(device), **totals, compressed_index_total_bytes=total,
                   compressed_to_fixed_ratio=total / totals['fixed_width_bytes'],
                   compressed_index_to_input_ratio=total / max(1, totals['input_bytes']),
                   compress_seconds=compress_seconds, decompress_seconds=decompress_seconds,
+                  empirical_level_entropy=levels,
+                  empirical_level_entropy_ideal_bytes=ideal_bits_per_chunk * len(records) / 8,
                   note='Zlib per packed chunk, including compressed length framing; verified indices. '
                        'Excludes original-text corrections, shared model/config, and other container metadata. '
-                       'Does not reduce generator sequence length. Source zlib has no extra record framing.')
+                       'Does not reduce generator sequence length. Source zlib has no extra record framing. '
+                       'Empirical entropy is in-sample, ignores table/framing cost and is not actual compressed size; '
+                       'context-dependent coding may outperform independent per-level estimates.')
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
@@ -106,6 +124,9 @@ def main():
     print(f"Input: {totals['input_bytes']} B; independently zlib-compressed input: {totals['raw_zlib_bytes']} B; "
           f"compressed VQ/input: {report['compressed_index_to_input_ratio']:.2f}x")
     print(f"CPU index compression: {compress_seconds:.3f}s; decompression: {decompress_seconds:.3f}s")
+    print(f"In-sample per-level entropy estimate: {report['empirical_level_entropy_ideal_bytes']:.0f} B "
+          f"({report['empirical_level_entropy_ideal_bytes'] / totals['fixed_width_bytes']:.2f}x fixed VQ); "
+          'idealized, not actual compressed bytes')
     print(report['note'])
     print(f'Report: {out.resolve()}', flush=True)
 
