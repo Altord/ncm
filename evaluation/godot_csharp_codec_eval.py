@@ -274,7 +274,8 @@ def main():
                 if device.type == "cuda":
                     torch.cuda.synchronize(device)
                 decode_started = time.perf_counter()
-            logits = model.decode(codes)
+            max_decode_tokens = max(map(sum, masks)) if model.autoregressive_decoder else None
+            logits = model.decode(codes, max_tokens=max_decode_tokens)
             predictions = logits.argmax(dim=-1).tolist()
             if args.measure_packed:
                 if device.type == "cuda":
@@ -487,7 +488,7 @@ def main():
 
     show_metric("Token accuracy", "valid_token_accuracy")
     exact = f"{report['exact_sequence_matches']}/{report['examples']}"
-    exact_line = f"Exact 64-token chunks: {exact} ({report['exact_sequence_match_rate'] * 100:.2f}%)"
+    exact_line = f"Exact up-to-{sequence_length}-token chunks: {exact} ({report['exact_sequence_match_rate'] * 100:.2f}%)"
     if previous is not None and "exact_sequence_match_rate" in previous:
         old = float(previous["exact_sequence_match_rate"]) * 100
         delta = report["exact_sequence_match_rate"] * 100 - old

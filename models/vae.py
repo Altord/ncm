@@ -44,6 +44,7 @@ class SelfAttention(nn.Module):
             self.k_norm = RMSNorm(head_dim)
         # attn_window=w restricts attention to |i-j| <= w; 0 means full.
         self.attn_window = int(getattr(config, "attn_window", 0) or 0)
+        self.causal = bool(getattr(config, "causal", False))
         assert hasattr(torch.nn.functional, "scaled_dot_product_attention")
 
     def _window_mask(self, T, device):
@@ -63,7 +64,8 @@ class SelfAttention(nn.Module):
 
         attn_mask = self._window_mask(T, x.device) if self.attn_window > 0 else None
         y = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, dropout_p=self.dropout if self.training else 0
+            q, k, v, attn_mask=attn_mask, dropout_p=self.dropout if self.training else 0,
+            is_causal=self.causal
         )
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.resid_dropout(self.c_proj(y))
@@ -256,6 +258,48 @@ class Decoder(nn.Module):
         x = self.ln_f(x)
         x = self.output_layer(x)
         return x
+
+
+class AutoregressiveDecoder(Decoder):
+    """Decode from quantized latents and already emitted tokens, never future tokens."""
+    def __init__(self, *args, bos_token_id=0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.token_embedding = nn.Embedding(self.output_layer.out_features, self.output_layer.in_features)
+        self.bos_token_id = int(bos_token_id)
+        self.middle_block.attn.causal = True
+        for block in self.extra_blocks:
+            block.attn.causal = True
+
+    def _features(self, z):
+        if self.up is not None:
+            z = self.up(z.transpose(1, 2)).transpose(1, 2)
+        if self.wpe is not None:
+            z = z + self.wpe(torch.arange(z.shape[1], device=z.device))
+        return z
+
+    def _logits(self, features, previous, last_only=False):
+        x = features[:, :previous.shape[1]] + self.token_embedding(previous)
+        x = self.middle_block(x)
+        for block in self.extra_blocks:
+            x = block(x)
+        x = self.ln_f(x)
+        return self.output_layer(x[:, -1:] if last_only else x)
+
+    def forward(self, z, targets=None, max_tokens=None):
+        features = self._features(z)
+        batch, length, _ = features.shape
+        bos = torch.full((batch, 1), self.bos_token_id, device=z.device, dtype=torch.long)
+        if targets is not None:
+            previous = torch.cat((bos, targets[:, :-1]), dim=1)
+            return self._logits(features, previous)
+        length = min(length, int(max_tokens)) if max_tokens is not None else length
+        previous = bos
+        logits = []
+        for _ in range(length):
+            step = self._logits(features, previous, last_only=True)
+            logits.append(step)
+            previous = torch.cat((previous, step.argmax(dim=-1)), dim=1)
+        return torch.cat(logits, dim=1)
     
     
 if __name__ == "__main__": 

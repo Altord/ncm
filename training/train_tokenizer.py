@@ -66,6 +66,9 @@ def main():
         val_loader = make_loader(cfg.train.validation_cache_dir, cfg.train.batch_size,
                                  cfg.train.num_workers, False, cfg.train.seed)
     model = VQVAE(**OmegaConf.create(OmegaConf.to_container(cfg.vqvae, resolve=True))).to(device)
+    if model.autoregressive_decoder:
+        print('Autoregressive decoder: training and checkpoint validation are teacher-forced; '
+              'run codec evaluation for free-running accuracy and compilation.', flush=True)
     params = [p for p in model.parameters() if p.requires_grad]
     optim = torch.optim.AdamW(params, lr=float(cfg.train.lr),
                               betas=tuple(cfg.train.betas),

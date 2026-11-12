@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
-from models.vae import Encoder, Decoder
+from models.vae import Encoder, Decoder, AutoregressiveDecoder
 from utils.registry import vector_quantizers
 import torch
 import hydra 
@@ -29,6 +29,8 @@ class VQVAE(nn.Module):
         pre_quant_norm_type='group',
         enc_positional=True,
         dec_positional=False,
+        autoregressive_decoder=False,
+        decoder_bos_token_id=0,
         **kwargs
     ):
         super().__init__()
@@ -50,10 +52,14 @@ class VQVAE(nn.Module):
         vq = hydra.utils.get_class(vector_quantizers[vector_quantizer_config.clss])
         self.vq = vq.from_config({ **{'vqvae_vocab_size': vqvae_vocab_size, 'embed_dim': embed_dim}, **dict(vector_quantizer_config)})
                 
-        self.decoder = Decoder(
+        self.autoregressive_decoder = bool(autoregressive_decoder)
+        decoder_cls = AutoregressiveDecoder if self.autoregressive_decoder else Decoder
+        extra_decoder_args = {'bos_token_id': decoder_bos_token_id} if self.autoregressive_decoder else {}
+        self.decoder = decoder_cls(
             in_vocab_size, embed_dim, n_layers, compression_factor=compression_factor,
             dropout=dropout, use_qk_norm=use_qk_norm, dec_layers=dec_layers,
             use_pos_emb=dec_positional, context_length=context_length,
+            **extra_decoder_args,
         )
 
         # affine=False: ||z-e||^2 is not scale-invariant, so a learnable gamma would inflate without bound.
@@ -91,7 +97,7 @@ class VQVAE(nn.Module):
     def forward(self, x):
         z = self._encode_pre_quant(x)
         z_q, vq_loss, per_level_codebook_util, global_codebook_util, ppl = self.vq(z)
-        x = self.decoder(z_q)
+        x = self.decoder(z_q, targets=x) if self.autoregressive_decoder else self.decoder(z_q)
         return x, vq_loss, per_level_codebook_util, global_codebook_util, ppl
 
     @torch.no_grad()
@@ -105,9 +111,9 @@ class VQVAE(nn.Module):
         return self._encode_pre_quant(x)
     
     @torch.no_grad()
-    def decode(self, idx):
+    def decode(self, idx, max_tokens=None):
         z_q = self.vq.idx_to_z_q(idx)
-        x = self.decoder(z_q)
+        x = self.decoder(z_q, max_tokens=max_tokens) if self.autoregressive_decoder else self.decoder(z_q)
         return x
     
     @torch.no_grad()

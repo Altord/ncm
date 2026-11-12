@@ -93,6 +93,8 @@ The requested `gfx1200_16.HIP.fdb.txt` was not present and was not listed in any
 
 ## Research: paths beyond tuning codec settings
 
+See [VQ position reduction research](VQ_POSITION_REDUCTION_RESEARCH.md) for the subsequent focused investigation of compact latent representations, adaptive allocation, quantization methods and later lossless index coding.
+
 Research reviewed 2026-11-12, while the identifier-weight experiment was in progress. These are candidate directions, not claims that our model already implements them.
 
 - [Latent Programmer](https://research.google/pubs/latent-programmer-discrete-latent-codes-for-program-synthesis/) is directly related: it trains a discrete autoencoder on program outputs, predicts latent codes from inputs, then generates a program. It reports program-synthesis gains in its own domains, not a guarantee of exact reconstruction or performance on this C#/Godot dataset. Its full generative pipeline is a useful architecture and evaluation reference.
