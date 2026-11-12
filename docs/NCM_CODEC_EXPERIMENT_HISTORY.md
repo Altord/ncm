@@ -102,6 +102,8 @@ The requested `gfx1200_16.HIP.fdb.txt` was not present and was not listed in any
 
 **Width progression follow-up:** Both exported artifacts selected step 5,000. Training validation at steps 1k through 5k for width 128 was 87.47%, 95.54%, 97.24%, 97.98%, 98.15%; width 192 was 92.66%, 97.33%, 97.97%, 98.17%, 98.36%. The latter training validation used BF16; separate reported codec evaluations used FP32. Median recorded training speeds were 93.7 vs 85.1 examples/s, respectively; this is not an end-to-end generator benchmark. Both validation trajectories improved through 5k, but the shared development stress result for width 192 was worse. This does not establish why or which model generalizes better.
 
+**Paired stress failures:** On 48 matching examples width 192 newly compiled four examples that failed at width 128, while eleven stopped compiling. The union is 40/48 with at least one compiling reconstruction, but compiler-based selection is not exact reconstruction: for example `MultiplyScore` compiled after `multiplier` was consistently changed to `multiSource`. Both encodings require the original input for this codec test; two generated latent streams and their cost have not been evaluated. This reused development set is not independent evidence.
+
 ## Research: paths beyond tuning codec settings
 
 See [VQ position reduction research](VQ_POSITION_REDUCTION_RESEARCH.md) for the subsequent focused investigation of compact latent representations, adaptive allocation, quantization methods and later lossless index coding.
