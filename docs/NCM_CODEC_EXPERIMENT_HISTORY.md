@@ -104,6 +104,8 @@ The requested `gfx1200_16.HIP.fdb.txt` was not present and was not listed in any
 
 **Paired stress failures:** On 48 matching examples width 192 newly compiled four examples that failed at width 128, while eleven stopped compiling. The union is 40/48 with at least one compiling reconstruction, but compiler-based selection is not exact reconstruction: for example `MultiplyScore` compiled after `multiplier` was consistently changed to `multiSource`. Both encodings require the original input for this codec test; two generated latent streams and their cost have not been evaluated. This reused development set is not independent evidence.
 
+**Two-candidate saved-result selector:** Preferring width 128 and falling back to width 192 only when the former failed compilation selected 40/48 compiling and 34/48 exact reconstructions. At least one of the two was exact in 37/48, but identifying that upper bound requires the original target. Width 128 alone gave 36/48 compiling and 33/48 exact. These are known-input codec reconstructions; producing two unknown-target latent sequences, their actual cost and their selection accuracy for generated code have not been tested. Two full code streams total 16,388 fixed-layout indices before any deduplication.
+
 ## Research: paths beyond tuning codec settings
 
 See [VQ position reduction research](VQ_POSITION_REDUCTION_RESEARCH.md) for the subsequent focused investigation of compact latent representations, adaptive allocation, quantization methods and later lossless index coding.
