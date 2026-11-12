@@ -39,6 +39,8 @@ def main():
     ap.add_argument("--config", required=True)
     ap.add_argument("--resume", default="")
     ap.add_argument("--max-steps", type=int, default=None)
+    ap.add_argument("--stop-after-steps", type=int, default=None,
+                    help="Stop at this total update count while keeping max-steps as the learning-rate schedule horizon.")
     ap.add_argument("--device", default=None)
     args = ap.parse_args()
     cfg = OmegaConf.load(args.config)
@@ -67,6 +69,9 @@ def main():
     model.train()
     accum = int(cfg.train.grad_accum_steps)
     max_steps = int(cfg.train.max_steps)
+    stop_step = min(max_steps, args.stop_after_steps) if args.stop_after_steps is not None else max_steps
+    if stop_step <= step:
+        raise ValueError(f"stop-after-steps must be greater than loaded step {step} and positive")
     log_every = int(cfg.train.log_every)
     save_every = int(cfg.train.save_every)
     eval_every = int(cfg.train.get("eval_every", save_every))
@@ -186,7 +191,7 @@ def main():
                  "best_validation_value": best_selection_value,
                  "best_validation_token_accuracy": best_tiebreak_value}))
 
-    while step < max_steps:
+    while step < stop_step:
         progressed = False
         for batch in loader:
             progressed = True
@@ -241,22 +246,22 @@ def main():
                 running = {k: 0.0 for k in running}
                 since_log = 0
                 last_log_time = time.perf_counter()
-            if val_loader is not None and (step % eval_every == 0 or step == max_steps):
+            if val_loader is not None and (step % eval_every == 0 or step == stop_step):
                 validate(step)
-            if step % save_every == 0 or step == max_steps:
+            if step % save_every == 0 or step == stop_step:
                 state = checkpoint_state(model, optim, scaler, step - 1, cfg, "tokenizer")
                 run.checkpoint(f"step-{step:08d}.pt", state)
-            if step >= max_steps:
+            if step >= stop_step:
                 break
         if not progressed:
             raise RuntimeError("Prepared cache is empty")
     final = run.checkpoint("final.pt", checkpoint_state(model, optim, scaler,
-                                                        max_steps - 1, cfg, "tokenizer"))
+                                                        step - 1, cfg, "tokenizer"))
     # Export the checkpoint selected by held-out loss when this invocation
     # performed validation. Keep final.pt as the resumable end-of-run state.
     artifact_checkpoint = best_checkpoint_path or final
     export_artifact(run, cfg, str(cfg.train.get("artifact_filename", "tokenizer.pt")), artifact_checkpoint, {
-        "stage": "tokenizer", "step": best_validation_step or max_steps,
+        "stage": "tokenizer", "step": best_validation_step or step,
         "selected_checkpoint": str(artifact_checkpoint.name),
         "best_validation_metric": selection_metric if best_checkpoint_path else None,
         "best_validation_value": best_selection_value if best_checkpoint_path else None,
@@ -266,7 +271,7 @@ def main():
     })
     print(f"Training complete. Checkpoints: {run.path / 'checkpoints'}; artifact: {cfg.train.artifact_dir}", flush=True)
     print("\n=== Human-readable tokenizer summary ===")
-    print(f"Updates completed: {max_steps}")
+    print(f"Updates completed: {step} (schedule horizon: {max_steps})")
     if best_validation_record is not None:
         print(
             f"Selected checkpoint: {artifact_checkpoint.name} at step {best_validation_step} "
