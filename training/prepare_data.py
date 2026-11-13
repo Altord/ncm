@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +38,11 @@ def prepare_tokenizer(cfg):
     append_eos = bool(dcfg.get("append_eos", True))
     weight_cfg = cfg.train.get("reconstruction_token_weights", None)
     occurrence_weights = bool(weight_cfg and str(weight_cfg.get("mode", "")) == "per_occurrence")
+    method_name_weight = weight_cfg.get('method_name', None) if weight_cfg else None
+    if method_name_weight is not None:
+        method_name_weight = float(method_name_weight)
+        if not occurrence_weights or not math.isfinite(method_name_weight) or method_name_weight <= 0:
+            raise ValueError('method_name requires positive finite per-occurrence weighting')
     hf_tokenizer = getattr(tok, "hf_tokenizer", None)
     if occurrence_weights and (hf_tokenizer is None or not getattr(hf_tokenizer, "is_fast", False)):
         raise ValueError("Per-occurrence code weights require a fast Hugging Face tokenizer")
@@ -64,6 +70,7 @@ def prepare_tokenizer(cfg):
                         text, [tuple(map(int, pair)) for pair in encoded["offset_mapping"]],
                         float(weight_cfg.get("syntax", 3.0)),
                         float(weight_cfg.get("identifier", 1.5)),
+                        method_name_weight=method_name_weight,
                     )
                 else:
                     # Keep project/XML records in the corpus without pretending they
@@ -120,6 +127,7 @@ def prepare_tokenizer(cfg):
         "eos_id": eos_id,
         "sequence_length": seq_len,
         "occurrence_weighted": occurrence_weights,
+        "method_name_weight": method_name_weight,
     })
     print(f"Prepared {count:,} sequences at {out}", flush=True)
 

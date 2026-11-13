@@ -56,7 +56,8 @@ def syntax_boundary_bytes(text: str) -> set[int]:
 
 def token_occurrence_weights(text: str, offsets: list[tuple[int, int]],
                              syntax_weight: float, identifier_weight: float,
-                             default_weight: float = 1.0) -> list[float]:
+                             default_weight: float = 1.0,
+                             method_name_weight: float | None = None) -> list[float]:
     """Label tokenizer offsets using this occurrence's C# syntax tree.
 
     BPE pieces that overlap an identifier or literal receive identifier weight;
@@ -83,6 +84,18 @@ def token_occurrence_weights(text: str, offsets: list[tuple[int, int]],
             if label > labels[index]:
                 labels[index] = label
 
+    if method_name_weight is not None:
+        for node in _walk(tree.root_node):
+            if node.type != 'method_declaration':
+                continue
+            name = node.child_by_field_name('name')
+            if name is None:
+                continue
+            start = byte_to_char[min(name.start_byte, len(byte_to_char) - 1)]
+            end = byte_to_char[min(name.end_byte, len(byte_to_char) - 1)]
+            for index in range(start, end):
+                labels[index] = 3
+
     weights = []
     for start, end in offsets:
         if end <= start:
@@ -90,7 +103,8 @@ def token_occurrence_weights(text: str, offsets: list[tuple[int, int]],
             continue
         label = max(labels[start:end], default=0)
         # Prefer identifier/literal weight when a BPE piece includes its leading space.
-        weights.append(float(identifier_weight) if label == 2
+        weights.append(float(method_name_weight) if label == 3
+                       else float(identifier_weight) if label == 2
                        else float(syntax_weight) if label == 1
                        else float(default_weight))
     return weights
