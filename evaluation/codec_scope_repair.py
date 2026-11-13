@@ -58,6 +58,8 @@ def main():
     p.add_argument('--candidate', action='append', default=[])
     p.add_argument('--output', required=True)
     p.add_argument('--max-attempts', type=int, default=24)
+    p.add_argument('--require-unique', action='store_true',
+                   help='Abstain unless this bounded search is exhausted and finds exactly one compiling text; uniqueness does not establish correctness')
     p.add_argument('--framework', default='net8.0')
     args = p.parse_args()
     if args.max_attempts < 1:
@@ -69,7 +71,7 @@ def main():
     others = [load(path) for path in args.candidate]
     if set(base) != set(prior) or any(set(x) != set(base) for x in others):
         raise SystemExit('Inputs have different IDs')
-    output, total, improved = [], 0, 0
+    output, total, improved, ambiguous, incomplete = [], 0, 0, 0, 0
     start = time.perf_counter()
     for i, (key, row) in enumerate(base.items(), 1):
         old = prior[key]
@@ -79,6 +81,8 @@ def main():
         if status not in ('passed', 'failed', 'empty'):
             raise SystemExit(f'Prior compile result unavailable: {key}')
         selected, chosen, attempts = old['selected'], old['selection'], 0
+        passing = {}
+        exhausted = True
         if status != 'passed':
             queue = []
             for source in [base] + others:
@@ -89,15 +93,19 @@ def main():
                 if comp['status'] not in ('passed', 'failed', 'empty'):
                     raise SystemExit(f'Compile result unavailable: {key}')
                 if comp['status'] == 'passed':
-                    selected, status, chosen = r['reconstructed'], 'passed', 'saved_candidate'
-                    break
+                    if not args.require_unique:
+                        selected, status, chosen = r['reconstructed'], 'passed', 'saved_candidate'
+                        break
+                    passing[r['reconstructed']] = 'saved_candidate'
+                    continue
                 queue.append((r['reconstructed'], comp.get('detail', ''), 0))
             seen = {item[0] for item in queue}
             while status != 'passed' and queue and attempts < args.max_attempts:
                 text, detail, depth = queue.pop(0)
                 if depth >= 2:
                     continue
-                for candidate, why in proposals(text, detail):
+                choices = proposals(text, detail)
+                for choice_index, (candidate, why) in enumerate(choices):
                     if candidate in seen:
                         continue
                     seen.add(candidate)
@@ -107,16 +115,40 @@ def main():
                     if result['status'] not in ('passed', 'failed', 'empty'):
                         raise SystemExit(f'Compiler unavailable or timed out: {key}: {result}')
                     if result['status'] == 'passed':
-                        selected, status, chosen = candidate, 'passed', why
-                        break
-                    if depth == 0:
+                        if not args.require_unique:
+                            selected, status, chosen = candidate, 'passed', why
+                            break
+                        passing[candidate] = why
+                    elif depth == 0:
                         queue.insert(0, (candidate, result.get('detail', ''), 1))
                     if attempts >= args.max_attempts:
+                        if any(c not in seen for c, _ in choices[choice_index + 1:]):
+                            exhausted = False
                         break
+            if queue:
+                exhausted = False
+            if args.require_unique:
+                if len(passing) > 1:
+                    ambiguous += 1
+                if not exhausted:
+                    incomplete += 1
+                if exhausted and len(passing) == 1:
+                    selected, chosen = next(iter(passing.items()))
+                    status = 'passed'
+                elif passing:
+                    print(f'{key}: abstained; compiling candidates={len(passing)}; search exhausted={exhausted}', flush=True)
+                for candidate, reason in passing.items():
+                    print(f'  {key}: {reason}: {candidate}', flush=True)
             if status == 'passed':
                 improved += 1
         output.append({'id': key, 'baseline': row['reconstructed'], 'selected': selected,
                        'selection': chosen, 'compile_status': status, 'attempts': attempts,
+                       'compiling_candidates_found': len(passing) if args.require_unique else None,
+                       'compiling_alternatives': ([{'text': text, 'reason': why,
+                                                     'exact_text_for_offline_scoring': text == row['target']}
+                                                    for text, why in passing.items()]
+                                                   if args.require_unique else None),
+                       'search_exhausted': exhausted if args.require_unique else None,
                        'selected_text_exact': selected == row['target']})
         print(f'Processed {i}/{len(base)}; newly compiling={improved}; attempts={total}', flush=True)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +158,8 @@ def main():
     report = {'examples': len(output), 'prior_compiles': sum(r['compile_status'] == 'passed' for r in prior.values()),
               'selected_compiles': sum(r['compile_status'] == 'passed' for r in output),
               'selected_exact_text': sum(r['selected_text_exact'] for r in output),
-              'newly_compiling': improved, 'compiler_attempts': total, 'elapsed_seconds': time.perf_counter()-start,
+              'newly_compiling': improved, 'ambiguous_examples': ambiguous, 'incomplete_searches': incomplete,
+              'require_unique': args.require_unique, 'compiler_attempts': total, 'elapsed_seconds': time.perf_counter()-start,
               'note': 'Known-input codec round trip. Candidates derive from reconstructed text and compiler diagnostics only; original used for offline scoring. Compilation does not prove exactness or correctness. Regex signature extraction is not C# scope resolution.'}
     out.with_suffix('.report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     print('\n=== Scope-inspired repair ===\n' + json.dumps(report, indent=2), flush=True)
