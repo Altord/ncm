@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
 import torch
 
 
@@ -18,6 +19,26 @@ volatile while var async await record required init get set add remove partial
 
 SYNTAX_MARKERS = "{}[]();,.?:=+-*/%!&|<>~^#@\\\"'`$"
 CSHARP_KEYWORD_SET = set(CSHARP_KEYWORDS)
+
+
+def training_token_frequency_weights(cache, vocab_size, threshold=32, max_weight=2.0):
+    """Count valid training-cache tokens and return bounded inverse-frequency weights."""
+    if threshold < 1 or not 1 <= max_weight <= 10:
+        raise ValueError('threshold must be positive and max_weight must be between 1 and 10')
+    if 'tokens' not in cache._arrays or 'mask' not in cache._arrays:
+        raise ValueError('Training cache must contain tokens and mask')
+    counts = np.zeros(int(vocab_size), dtype=np.int64)
+    for begin in range(0, len(cache), 1024):
+        tokens = np.asarray(cache._arrays['tokens'][begin:begin+1024])
+        mask = np.asarray(cache._arrays['mask'][begin:begin+1024], dtype=bool)
+        valid = tokens[mask].astype(np.int64, copy=False)
+        if valid.size and (valid.min() < 0 or valid.max() >= vocab_size):
+            raise ValueError('Training cache contains token IDs outside the codec vocabulary')
+        counts += np.bincount(valid, minlength=int(vocab_size))
+    weights = np.ones(int(vocab_size), dtype=np.float32)
+    observed = counts > 0
+    weights[observed] = np.clip(np.sqrt(float(threshold) / counts[observed]), 1.0, max_weight)
+    return torch.from_numpy(weights), counts
 
 
 def make_code_token_weights(tokenizer, vocab_size: int, syntax_weight: float,

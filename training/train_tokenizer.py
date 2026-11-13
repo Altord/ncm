@@ -19,7 +19,8 @@ from training.engine import (Run, autocast_context, checkpoint_state, device_fro
                              export_artifact, load_resume, lr_for_step,
                              make_loader, make_scaler, seed_all)
 from training.data import load_base_tokenizer
-from training.reconstruction_loss import make_code_token_weights, select_reconstruction_weights
+from training.reconstruction_loss import (make_code_token_weights, select_reconstruction_weights,
+                                          training_token_frequency_weights)
 
 
 def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=True,
@@ -155,6 +156,16 @@ def main():
                 f"(syntax={syntax_count}, identifier/literal={identifier_count}); "
                 "validation metrics remain unweighted.", flush=True
             )
+    rare_cfg = cfg.train.get('rare_token_weights', None)
+    rare_weights = None
+    if rare_cfg and bool(rare_cfg.get('enabled', False)):
+        weights_cpu, counts = training_token_frequency_weights(
+            loader.dataset, int(cfg.vqvae.in_vocab_size),
+            int(rare_cfg.get('threshold', 32)), float(rare_cfg.get('max_weight', 2.0)))
+        rare_weights = weights_cpu.to(device)
+        print(f"Training-token rarity weights enabled: {(counts > 0).sum()} observed IDs, "
+              f"{int((weights_cpu > 1).sum())} upweighted; threshold={int(rare_cfg.get('threshold', 32))}, "
+              f"cap={float(rare_cfg.get('max_weight', 2.0)):.2f}. Validation remains unweighted.", flush=True)
     optim.zero_grad(set_to_none=True)
     running = {"loss": 0.0, "recon_ce": 0.0, "weighted_recon_ce": 0.0, "vq": 0.0}
     micro = 0
@@ -243,6 +254,10 @@ def main():
                 reconstruction_weights = select_reconstruction_weights(
                     x, token_weights, occurrence_weights
                 )
+                if rare_weights is not None:
+                    rarity = rare_weights[x]
+                    reconstruction_weights = (rarity if reconstruction_weights is None
+                                              else reconstruction_weights * rarity)
                 ce, train_ce = reconstruction_ce(
                     logits, x, valid, reconstruction_weights, mask_padding,
                     hard_fraction=hard_fraction, hard_mix=hard_mix, focal_gamma=focal_gamma,
