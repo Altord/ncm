@@ -247,7 +247,7 @@ class Decoder(nn.Module):
             self.up = convT
 
 
-    def forward(self, z):
+    def forward_features(self, z):
         if self.up is not None:
             z = self.up(z.transpose(1, 2)).transpose(1, 2)
         if self.wpe is not None:
@@ -255,9 +255,10 @@ class Decoder(nn.Module):
         x = self.middle_block(z)
         for blk in self.extra_blocks:
             x = blk(x)
-        x = self.ln_f(x)
-        x = self.output_layer(x)
-        return x
+        return self.ln_f(x)
+
+    def forward(self, z):
+        return self.output_layer(self.forward_features(z))
 
 
 class AutoregressiveDecoder(Decoder):
