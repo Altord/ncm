@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from collections import Counter
 
 
 IDENTIFIER_NODES = {
@@ -57,7 +58,8 @@ def syntax_boundary_bytes(text: str) -> set[int]:
 def token_occurrence_weights(text: str, offsets: list[tuple[int, int]],
                              syntax_weight: float, identifier_weight: float,
                              default_weight: float = 1.0,
-                             method_name_weight: float | None = None) -> list[float]:
+                             method_name_weight: float | None = None,
+                             repeated_identifier_weight: float | None = None) -> list[float]:
     """Label tokenizer offsets using this occurrence's C# syntax tree.
 
     BPE pieces that overlap an identifier or literal receive identifier weight;
@@ -96,6 +98,19 @@ def token_occurrence_weights(text: str, offsets: list[tuple[int, int]],
             for index in range(start, end):
                 labels[index] = 3
 
+    if repeated_identifier_weight is not None:
+        source = text.encode('utf-8')
+        nodes = [n for n in _walk(tree.root_node) if n.type in ('identifier', 'verbatim_identifier')]
+        counts = Counter(source[n.start_byte:n.end_byte] for n in nodes)
+        for node in nodes:
+            if counts[source[node.start_byte:node.end_byte]] < 2:
+                continue
+            start = byte_to_char[min(node.start_byte, len(byte_to_char) - 1)]
+            end = byte_to_char[min(node.end_byte, len(byte_to_char) - 1)]
+            for index in range(start, end):
+                if labels[index] != 3:
+                    labels[index] = 4
+
     weights = []
     for start, end in offsets:
         if end <= start:
@@ -103,7 +118,8 @@ def token_occurrence_weights(text: str, offsets: list[tuple[int, int]],
             continue
         label = max(labels[start:end], default=0)
         # Prefer identifier/literal weight when a BPE piece includes its leading space.
-        weights.append(float(method_name_weight) if label == 3
+        weights.append(float(repeated_identifier_weight) if label == 4
+                       else float(method_name_weight) if label == 3
                        else float(identifier_weight) if label == 2
                        else float(syntax_weight) if label == 1
                        else float(default_weight))
