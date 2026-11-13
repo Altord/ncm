@@ -41,6 +41,24 @@ def training_token_frequency_weights(cache, vocab_size, threshold=32, max_weight
     return torch.from_numpy(weights), counts
 
 
+def repeated_identifier_piece_factors(targets, valid, occurrence_weights,
+                                      identifier_weight, multiplier=1.5):
+    """Extra weights for repeated identifier/literal-labeled token IDs within each chunk.
+
+    This is a token-piece heuristic, not symbol resolution or an inference copy path.
+    """
+    if not 1 <= multiplier <= 4:
+        raise ValueError('repeat multiplier must be between 1 and 4')
+    if targets.ndim != 2 or valid.shape != targets.shape or occurrence_weights.shape != targets.shape:
+        raise ValueError('targets, valid, and occurrence weights must share [batch, sequence] shape')
+    eligible = valid.bool() & (occurrence_weights == float(identifier_weight))
+    same = targets.unsqueeze(2) == targets.unsqueeze(1)
+    counts = (same & eligible.unsqueeze(1)).sum(dim=2)
+    repeated = eligible & (counts > 1)
+    return torch.where(repeated, torch.full_like(occurrence_weights, float(multiplier)),
+                       torch.ones_like(occurrence_weights))
+
+
 def make_code_token_weights(tokenizer, vocab_size: int, syntax_weight: float,
                             identifier_weight: float):
     """Build per-token loss weights from the configured HF tokenizer.

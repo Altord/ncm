@@ -20,7 +20,8 @@ from training.engine import (Run, autocast_context, checkpoint_state, device_fro
                              make_loader, make_scaler, seed_all)
 from training.data import load_base_tokenizer
 from training.reconstruction_loss import (make_code_token_weights, select_reconstruction_weights,
-                                          training_token_frequency_weights)
+                                          training_token_frequency_weights,
+                                          repeated_identifier_piece_factors)
 
 
 def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=True,
@@ -156,6 +157,18 @@ def main():
                 f"(syntax={syntax_count}, identifier/literal={identifier_count}); "
                 "validation metrics remain unweighted.", flush=True
             )
+    repeat_cfg = cfg.train.get('repeat_token_weights', None)
+    repeat_enabled = bool(repeat_cfg and repeat_cfg.get('enabled', False))
+    repeat_multiplier = float(repeat_cfg.get('multiplier', 1.5)) if repeat_enabled else 1.0
+    if repeat_enabled:
+        if not occurrence_weighting:
+            raise ValueError('Repeated identifier-piece weighting requires per-occurrence cache labels')
+        if not 1 <= repeat_multiplier <= 4:
+            raise ValueError('repeat token multiplier must be between 1 and 4')
+        if float(weight_cfg.get('identifier', 1.5)) in (1.0, float(weight_cfg.get('syntax', 3.0))):
+            raise ValueError('Identifier/literal weight must differ from default and syntax weights')
+        print(f'Repeated identifier/literal token-piece weighting enabled: {repeat_multiplier:.2f}x; '
+              'validation remains unweighted.', flush=True)
     rare_cfg = cfg.train.get('rare_token_weights', None)
     rare_weights = None
     if rare_cfg and bool(rare_cfg.get('enabled', False)):
@@ -258,6 +271,11 @@ def main():
                     rarity = rare_weights[x]
                     reconstruction_weights = (rarity if reconstruction_weights is None
                                               else reconstruction_weights * rarity)
+                if repeat_enabled:
+                    repeat_factors = repeated_identifier_piece_factors(
+                        x, valid, occurrence_weights, float(weight_cfg.get('identifier', 1.5)),
+                        repeat_multiplier)
+                    reconstruction_weights = reconstruction_weights * repeat_factors
                 ce, train_ce = reconstruction_ce(
                     logits, x, valid, reconstruction_weights, mask_padding,
                     hard_fraction=hard_fraction, hard_mix=hard_mix, focal_gamma=focal_gamma,
