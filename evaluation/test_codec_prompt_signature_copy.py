@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from evaluation.codec_prompt_signature_copy import copy_signature
+from evaluation.codec_prompt_signature_copy import copy_signature, fallback_body_offset
 import evaluation.codec_prompt_signature_copy as experiment
 
 prompt = 'Complete this C# method: static int Midpoint(int a, int b)'
@@ -19,6 +19,12 @@ assert copy_signature(prompt, 'not a valid method')[1] == 'decoded_method_unavai
 prompt = 'Complete this C# method: static int café(int value)'
 decoded = 'static int caff(int value) { return value + 1; }'
 assert copy_signature(prompt, decoded)[0] == 'static int café(int value) { return value + 1; }'
+fallback_prompt = 'Complete this C# method: static int M(int x)'
+malformed = '??? (int x) => x;'
+assert copy_signature(fallback_prompt, malformed)[1] == 'decoded_method_unavailable'
+assert copy_signature(fallback_prompt, malformed, fallback=True) == ('static int M(int x) => x;', 'fallback_signature_copied')
+assert fallback_body_offset('static int bad( => 1;') is None
+assert fallback_body_offset('??? (int x) => "x";') is None
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     row = {'id': 'x', 'prompt': prompt, 'reconstructed': decoded,

@@ -40,7 +40,33 @@ def parse_method(text, *, require_clean=False):
             'name': source[name.start_byte:name.end_byte].decode('utf-8')}
 
 
-def copy_signature(prompt, decoded):
+def fallback_body_offset(text):
+    """Find an unambiguous top-level method body boundary or abstain.
+
+    This deliberately rejects comments, strings, directives and unmatched
+    delimiters instead of pretending to implement a full C# lexer.
+    """
+    if any(s in text for s in ('//', '/*', '"', "'", '#')):
+        return None
+    stack = []
+    seen_parameters = False
+    for i, char in enumerate(text):
+        if char in '([':
+            stack.append(char)
+        elif char in ')]':
+            wanted = '(' if char == ')' else '['
+            if not stack or stack.pop() != wanted:
+                return None
+            if char == ')' and not stack:
+                seen_parameters = True
+        elif not stack and seen_parameters and (char == '{' or text[i:i+2] == '=>'):
+            return i
+        elif not stack and char in ';}':
+            return None
+    return None
+
+
+def copy_signature(prompt, decoded, *, fallback=False):
     if not isinstance(prompt, str) or not prompt.startswith(PROMPT_PREFIX):
         return decoded, 'prompt_not_signature'
     signature = prompt[len(PROMPT_PREFIX):].strip()
@@ -51,7 +77,13 @@ def copy_signature(prompt, decoded):
     if not signature or prompt_parsed is None:
         return decoded, 'invalid_prompt_signature'
     if decoded_parsed is None:
-        return decoded, 'decoded_method_unavailable'
+        offset = fallback_body_offset(decoded) if fallback else None
+        if offset is None:
+            return decoded, 'decoded_method_unavailable'
+        header = decoded[:offset]
+        trailing = header[len(header.rstrip()):]
+        restored = signature + trailing + decoded[offset:]
+        return restored, 'fallback_signature_copied'
     raw = decoded.encode('utf-8')
     start, body = decoded_parsed['start'], decoded_parsed['body']
     header = raw[start:body]
@@ -65,6 +97,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--input', required=True, help='Saved codec reconstruction JSONL with prompts')
     p.add_argument('--output', required=True)
+    p.add_argument('--fallback', action='store_true',
+                   help='Try conservative body-boundary detection on malformed decoded methods')
     args = p.parse_args()
     inp, out = Path(args.input), Path(args.output)
     if out.exists() or out.with_suffix('.report.json').exists():
@@ -79,7 +113,7 @@ def main():
             raise ValueError('Rows must contain prompt and target strings')
         decoded = row['reconstructed']
         # Candidate creation uses no target or compiler result.
-        selected, reason = copy_signature(row['prompt'], decoded)
+        selected, reason = copy_signature(row['prompt'], decoded, fallback=args.fallback)
         target = row['target']  # Offline scoring only.
         target_method = parse_method(target)
         decoded_method = parse_method(decoded)
@@ -95,7 +129,7 @@ def main():
                         'before_similarity': difflib.SequenceMatcher(None, target, decoded, autojunk=False).ratio(),
                         'after_similarity': difflib.SequenceMatcher(None, target, selected, autojunk=False).ratio()})
     counts = {key: sum(r['selection'] == key for r in results) for key in (
-        'signature_copied', 'unchanged', 'prompt_not_signature', 'invalid_prompt_signature', 'decoded_method_unavailable')}
+        'signature_copied', 'fallback_signature_copied', 'unchanged', 'prompt_not_signature', 'invalid_prompt_signature', 'decoded_method_unavailable')}
     report = {'examples': len(results), 'before_exact_text': sum(r['before_exact'] for r in results),
               'after_exact_text': sum(r['after_exact'] for r in results),
               'new_exact_text': sum(not r['before_exact'] and r['after_exact'] for r in results),
@@ -106,8 +140,9 @@ def main():
               'before_mean_character_similarity': sum(r['before_similarity'] for r in results) / len(results),
               'after_mean_character_similarity': sum(r['after_similarity'] for r in results) / len(results),
               'selection_counts': counts, 'elapsed_seconds': time.perf_counter()-start,
+              'fallback_enabled': args.fallback,
               'scope': 'Synthetic signature-to-method prompts. Copies the supplied signature into a frozen known-target codec reconstruction. Prompt and decoded text choose edits; targets are offline scoring only. Not generator quality or a learned pointer.',
-              'limitations': 'Prompt contains the expected signature by dataset construction; not representative of natural-language-only prompts. Malformed or ambiguous methods are skipped. Does not fix body references or verify semantics. Original target was encoded into codec latents.'}
+              'limitations': 'Prompt contains the expected signature by dataset construction; not representative of natural-language-only prompts. Conservative fallback may misidentify a body boundary and abstains on many malformed cases. Does not fix body references or verify semantics. Original target was encoded into codec latents.'}
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open('x', encoding='utf-8') as f:
         for row in results:
