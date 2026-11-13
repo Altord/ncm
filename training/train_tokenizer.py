@@ -18,10 +18,11 @@ from models.vqvae import VQVAE
 from training.engine import (Run, autocast_context, checkpoint_state, device_from,
                              export_artifact, load_resume, lr_for_step,
                              make_loader, make_scaler, seed_all)
-from training.data import load_base_tokenizer
+from training.data import load_base_tokenizer, sha256_file
 from training.reconstruction_loss import (make_code_token_weights, select_reconstruction_weights,
                                           training_token_frequency_weights,
-                                          repeated_identifier_piece_factors)
+                                          repeated_identifier_piece_factors,
+                                          topk_teacher_distillation_loss)
 
 
 def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=True,
@@ -179,8 +180,37 @@ def main():
         print(f"Training-token rarity weights enabled: {(counts > 0).sum()} observed IDs, "
               f"{int((weights_cpu > 1).sum())} upweighted; threshold={int(rare_cfg.get('threshold', 32))}, "
               f"cap={float(rare_cfg.get('max_weight', 2.0)):.2f}. Validation remains unweighted.", flush=True)
+    distill_cfg = cfg.train.get('distillation', None)
+    teachers = []
+    distill_weight = float(distill_cfg.get('weight', 0.0)) if distill_cfg else 0.0
+    distill_topk = int(distill_cfg.get('topk', 4)) if distill_cfg else 4
+    if not math.isfinite(distill_weight) or distill_weight < 0:
+        raise ValueError('distillation weight must be finite and nonnegative')
+    if distill_weight:
+        if distill_topk < 2 or distill_topk > int(cfg.vqvae.in_vocab_size):
+            raise ValueError('distillation topk must be between 2 and codec vocabulary size')
+        specs = list(distill_cfg.get('teachers', []))
+        if not specs:
+            raise ValueError('distillation requires at least one teacher')
+        for spec in specs:
+            tc = OmegaConf.load(spec.config)
+            OmegaConf.resolve(tc)
+            if (OmegaConf.to_container(tc.tokenizer, resolve=True) != OmegaConf.to_container(cfg.tokenizer, resolve=True) or
+                OmegaConf.to_container(tc.vqvae, resolve=True) != OmegaConf.to_container(cfg.vqvae, resolve=True) or
+                int(tc.model.context_length) != int(cfg.model.context_length) or
+                sha256_file(tc.data.input) != sha256_file(cfg.data.input)):
+                raise ValueError(f'Teacher config is incompatible or uses different training data: {spec.config}')
+            teacher = VQVAE(**OmegaConf.create(OmegaConf.to_container(tc.vqvae, resolve=True)))
+            ckpt = torch.load(spec.checkpoint, map_location='cpu', weights_only=False)
+            teacher.load_state_dict(ckpt['model'], strict=True)
+            teacher.to(device).eval().requires_grad_(False)
+            teachers.append(teacher)
+        print(f'Top-{distill_topk} distillation enabled with {len(teachers)} frozen teachers; '
+              f'weight={distill_weight}. Only teacher-correct valid tokens contribute; '
+              'validation remains unweighted.', flush=True)
     optim.zero_grad(set_to_none=True)
-    running = {"loss": 0.0, "recon_ce": 0.0, "weighted_recon_ce": 0.0, "vq": 0.0}
+    running = {"loss": 0.0, "recon_ce": 0.0, "weighted_recon_ce": 0.0, "vq": 0.0,
+               **({'distill_ce': 0.0, 'teacher_correct_fraction': 0.0} if teachers else {})}
     micro = 0
     since_log = 0
     last_log_time = time.perf_counter()
@@ -259,6 +289,14 @@ def main():
             x = batch["tokens"].to(device, non_blocking=True).long()
             valid = batch["mask"].to(device, non_blocking=True).bool()
             with autocast_context(device, cfg.train.precision):
+                teacher_topk = []
+                if teachers:
+                    with torch.no_grad():
+                        for teacher in teachers:
+                            teacher_logits = teacher(x)[0]
+                            values, indices = teacher_logits.topk(distill_topk, dim=-1)
+                            teacher_topk.append((indices, torch.softmax(values.float(), dim=-1)))
+                            del teacher_logits, values
                 logits, vq_loss, per_level_util, global_util, _ = model(x)
                 occurrence_weights = (
                     batch["token_weights"].to(device, non_blocking=True).float()
@@ -281,6 +319,10 @@ def main():
                     hard_fraction=hard_fraction, hard_mix=hard_mix, focal_gamma=focal_gamma,
                 )
                 loss = train_ce + vq_weight * vq_loss.float()
+                if teachers:
+                    distill_ce, teacher_count = topk_teacher_distillation_loss(logits, x, valid, teacher_topk)
+                    loss = loss + distill_weight * distill_ce
+                    teacher_fraction = teacher_count / (valid.sum().clamp_min(1) * len(teachers))
             last_util = {"per_level_codebook_utilization": per_level_util,
                          "global_codebook_utilization": global_util}
             scaler.scale(loss / accum).backward()
@@ -289,6 +331,9 @@ def main():
             for key, val in (("loss", loss), ("recon_ce", ce),
                              ("weighted_recon_ce", train_ce), ("vq", vq_loss)):
                 running[key] += float(val.detach()) * n_examples
+            if teachers:
+                running['distill_ce'] += float(distill_ce.detach()) * n_examples
+                running['teacher_correct_fraction'] += float(teacher_fraction.detach()) * n_examples
             since_log += n_examples
             if micro % accum:
                 continue

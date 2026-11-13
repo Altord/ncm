@@ -59,6 +59,28 @@ def repeated_identifier_piece_factors(targets, valid, occurrence_weights,
                        torch.ones_like(occurrence_weights))
 
 
+def topk_teacher_distillation_loss(student_logits, targets, valid, teacher_topk):
+    """Train toward teacher top-k distributions only where that teacher's top-1 is correct.
+
+    Teachers supply detached (indices, normalized probabilities) tensors. The
+    teacher distribution is renormalized over its top-k, not the full vocabulary.
+    """
+    if not teacher_topk:
+        raise ValueError('At least one teacher is required')
+    log_normalizer = torch.logsumexp(student_logits.float(), dim=-1)
+    numerator = torch.zeros((), device=student_logits.device, dtype=torch.float32)
+    denominator = torch.zeros((), device=student_logits.device, dtype=torch.float32)
+    for indices, probabilities in teacher_topk:
+        if indices.shape != probabilities.shape or indices.shape[:2] != targets.shape:
+            raise ValueError('Teacher top-k shape must match targets')
+        mask = valid.bool() & (indices[..., 0] == targets)
+        chosen = student_logits.gather(-1, indices).float()
+        token_loss = log_normalizer - (probabilities * chosen).sum(dim=-1)
+        numerator = numerator + (token_loss * mask).sum()
+        denominator = denominator + mask.sum()
+    return numerator / denominator.clamp_min(1), denominator
+
+
 def make_code_token_weights(tokenizer, vocab_size: int, syntax_weight: float,
                             identifier_weight: float):
     """Build per-token loss weights from the configured HF tokenizer.
