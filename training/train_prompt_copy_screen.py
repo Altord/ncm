@@ -80,6 +80,8 @@ def main():
     p.add_argument('--attention-aux-weight', type=float, default=0.0)
     p.add_argument('--gate-aux-weight', type=float, default=0.0)
     p.add_argument('--gate-positive-weight', type=float, default=1.0)
+    p.add_argument('--confidence-aware-gate', action='store_true',
+                   help='Give copy gate codec logit margin and prompt-attention signals')
     args = p.parse_args()
     if (min(args.steps, args.batch_size, args.prefix_length) < 1 or args.lr <= 0 or
         not math.isfinite(args.copyable_error_boost) or args.copyable_error_boost < 1 or
@@ -116,7 +118,7 @@ def main():
     overlap = {r['row']['source'] for r in train} & {r['row']['source'] for r in val}
     if overlap:
         raise SystemExit(f'Train/validation source paths overlap: {sorted(overlap)[:5]}')
-    head = PromptCopyHead(int(cfg.vqvae.embed_dim)).to(device)
+    head = PromptCopyHead(int(cfg.vqvae.embed_dim), confidence_aware_gate=args.confidence_aware_gate).to(device)
     optimizer = torch.optim.AdamW(head.parameters(), lr=args.lr)
     start = time.perf_counter()
     print(f'Training on {len(train)} methods; validating on {len(val)} source-disjoint methods; '
@@ -149,6 +151,7 @@ def main():
                 'copyable_error_boost': args.copyable_error_boost,
                 'attention_aux_weight': args.attention_aux_weight, 'gate_aux_weight': args.gate_aux_weight,
                 'gate_positive_weight': args.gate_positive_weight,
+                'confidence_aware_gate': args.confidence_aware_gate,
                 'codec_sha256': sha256_file(args.codec_checkpoint),
                 'train_sha256': sha256_file(args.train)}, out / 'copy_head.pt')
     head.eval()
@@ -156,6 +159,7 @@ def main():
     total_correct = [0, 0]
     total_valid = 0
     gates = 0.0
+    gate_on_errors = gate_on_correct = margin_on_errors = margin_on_correct = 0.0
     baseline_errors = copyable_errors = fixed_errors = introduced_errors = copyable_fixed = 0
     with torch.inference_mode():
         for begin in range(0, len(val), args.batch_size):
@@ -169,6 +173,13 @@ def main():
             total_valid += int(valid.sum())
             gates += float((gate * valid).sum())
             wrong = (original != x) & valid
+            correct = (original == x) & valid
+            top = logits.float().topk(2, dim=-1).values
+            margin = top[..., 0] - top[..., 1]
+            gate_on_errors += float((gate * wrong).sum())
+            gate_on_correct += float((gate * correct).sum())
+            margin_on_errors += float((margin * wrong).sum())
+            margin_on_correct += float((margin * correct).sum())
             copyable = ((prompt[:, None, :] == x[:, :, None]) & pmask[:, None, :]).any(dim=-1)
             after_wrong = (copied != x) & valid
             baseline_errors += int(wrong.sum())
@@ -198,6 +209,7 @@ def main():
               'copyable_error_boost': args.copyable_error_boost,
               'attention_aux_weight': args.attention_aux_weight, 'gate_aux_weight': args.gate_aux_weight,
               'gate_positive_weight': args.gate_positive_weight,
+              'confidence_aware_gate': args.confidence_aware_gate,
               'before_token_accuracy': total_correct[0] / total_valid, 'after_token_accuracy': total_correct[1] / total_valid,
               'before_exact_text': sum(r['before_exact_text'] for r in result),
               'after_exact_text': sum(r['after_exact_text'] for r in result),
@@ -207,6 +219,10 @@ def main():
               'after_exact_names': sum(r['after_name_exact'] for r in result),
               'scorable_names': sum(r['name_scorable'] for r in result),
               'mean_copy_gate': gates / total_valid,
+              'mean_gate_on_baseline_errors': gate_on_errors / baseline_errors if baseline_errors else None,
+              'mean_gate_on_baseline_correct': gate_on_correct / (total_valid-baseline_errors) if total_valid > baseline_errors else None,
+              'mean_logit_margin_on_errors': margin_on_errors / baseline_errors if baseline_errors else None,
+              'mean_logit_margin_on_correct': margin_on_correct / (total_valid-baseline_errors) if total_valid > baseline_errors else None,
               'baseline_token_errors': baseline_errors,
               'baseline_errors_with_target_token_in_prompt': copyable_errors,
               'baseline_errors_fixed': fixed_errors, 'new_token_errors': introduced_errors,

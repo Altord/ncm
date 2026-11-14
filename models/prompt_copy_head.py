@@ -6,23 +6,38 @@ import torch.nn.functional as F
 
 
 class PromptCopyHead(nn.Module):
-    def __init__(self, width):
+    def __init__(self, width, confidence_aware_gate=False):
         super().__init__()
         self.query = nn.Linear(width, width, bias=False)
         self.key = nn.Linear(width, width, bias=False)
         self.gate = nn.Linear(width, 1)
         nn.init.zeros_(self.gate.weight)
         nn.init.constant_(self.gate.bias, -4.0)
+        self.confidence_gate = nn.Linear(3, 1, bias=False) if confidence_aware_gate else None
+        if self.confidence_gate is not None:
+            nn.init.zeros_(self.confidence_gate.weight)
         self.scale = width ** -0.5
 
-    def distribution(self, features, prompt_embeddings, prompt_mask):
+    def distribution(self, features, prompt_embeddings, prompt_mask, base_logits=None, prompt_ids=None):
         if prompt_mask.ndim != 2 or not prompt_mask.bool().any(dim=1).all():
             raise ValueError('Each prompt must have at least one unmasked token')
         query = self.query(features.float())
         keys = self.key(prompt_embeddings.float())
         scores = torch.matmul(query, keys.transpose(1, 2)) * self.scale
         scores = scores.masked_fill(~prompt_mask[:, None, :].bool(), float('-inf'))
-        return scores.softmax(dim=-1), self.gate(features.float()).squeeze(-1)
+        attention = scores.softmax(dim=-1)
+        gate = self.gate(features.float()).squeeze(-1)
+        if self.confidence_gate is not None:
+            if base_logits is None or prompt_ids is None:
+                raise ValueError('Confidence-aware gate requires codec logits and prompt token IDs')
+            top = base_logits.float().topk(2, dim=-1)
+            margin = (top.values[..., 0] - top.values[..., 1]).clamp(0, 20) / 20
+            concentration = attention.max(dim=-1).values
+            base_matches = (prompt_ids[:, None, :] == top.indices[..., 0, None]) & prompt_mask[:, None, :].bool()
+            support = (attention * base_matches).sum(dim=-1)
+            signals = torch.stack((margin, concentration, support), dim=-1)
+            gate = gate + self.confidence_gate(signals).squeeze(-1)
+        return attention, gate
 
     def nll(self, features, base_logits, prompt_embeddings, prompt_ids, prompt_mask, targets, valid,
             copyable_error_boost=1.0, attention_aux_weight=0.0, gate_aux_weight=0.0,
@@ -33,7 +48,8 @@ class PromptCopyHead(nn.Module):
             not math.isfinite(gate_aux_weight) or gate_aux_weight < 0 or
             not math.isfinite(gate_positive_weight) or gate_positive_weight < 1):
             raise ValueError('Auxiliary weights must be finite and nonnegative; gate positive weight must be at least 1')
-        attention, gate_logits = self.distribution(features, prompt_embeddings, prompt_mask)
+        attention, gate_logits = self.distribution(features, prompt_embeddings, prompt_mask,
+                                                   base_logits=base_logits, prompt_ids=prompt_ids)
         matches = (prompt_ids[:, None, :] == targets[:, :, None]) & prompt_mask[:, None, :].bool()
         copy_prob = (attention * matches).sum(dim=-1)
         logits = base_logits.float()
@@ -54,7 +70,8 @@ class PromptCopyHead(nn.Module):
         return loss
 
     def predict(self, features, base_logits, prompt_embeddings, prompt_ids, prompt_mask):
-        attention, gate_logits = self.distribution(features, prompt_embeddings, prompt_mask)
+        attention, gate_logits = self.distribution(features, prompt_embeddings, prompt_mask,
+                                                   base_logits=base_logits, prompt_ids=prompt_ids)
         gate = gate_logits.sigmoid().unsqueeze(-1)
         probs = base_logits.float().softmax(dim=-1) * (1 - gate)
         indices = prompt_ids[:, None, :].expand(-1, features.size(1), -1)

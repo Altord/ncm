@@ -52,6 +52,28 @@ none_loss, none_components = head.nll(features, base, embeddings, ids, mask,
     torch.full_like(target, 4), valid, attention_aux_weight=.2, gate_aux_weight=.1,
     return_components=True)
 assert none_components['copyable_errors'].item() == 0 and torch.isfinite(none_loss)
+aware = PromptCopyHead(4, confidence_aware_gate=True)
+missing, unexpected = aware.load_state_dict(head.state_dict(), strict=False)
+assert missing == ['confidence_gate.weight'] and not unexpected
+aware_attention, aware_gate = aware.distribution(features, embeddings, mask, base, ids)
+assert torch.allclose(aware_attention, attention) and torch.allclose(aware_gate, gate)
+with torch.no_grad():
+    aware.confidence_gate.weight[0, 0] = 1.0
+_, wide_gate = aware.distribution(features, embeddings, mask, base, ids)
+narrow_base = base.clone()
+narrow_base[0, 0, 0] = 0.1
+_, narrow_gate = aware.distribution(features, embeddings, mask, narrow_base, ids)
+assert wide_gate[0, 0] > narrow_gate[0, 0]
+aware_loss = aware.nll(features, base, embeddings, ids, mask, target, valid,
+                       attention_aux_weight=.2, gate_aux_weight=.1)
+aware_loss.backward()
+assert aware.confidence_gate.weight.grad is not None and torch.isfinite(aware.confidence_gate.weight.grad).all()
+try:
+    aware.distribution(features, embeddings, mask)
+except ValueError:
+    pass
+else:
+    raise AssertionError('Confidence-aware gate accepted missing logits and token IDs')
 try:
     head.nll(features, base, embeddings, ids, mask, target, valid, copyable_error_boost=0.5)
 except ValueError:
