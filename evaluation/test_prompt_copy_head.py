@@ -74,6 +74,38 @@ except ValueError:
     pass
 else:
     raise AssertionError('Confidence-aware gate accepted missing logits and token IDs')
+contextual = PromptCopyHead(4, context_layers=1, context_heads=1, context_max_length=3)
+contextual.eval()
+with torch.no_grad():
+    contextual.query.weight.copy_(torch.eye(4))
+    contextual.key.weight.copy_(torch.eye(4))
+    for parameter in contextual.context_encoder.parameters():
+        parameter.zero_()
+    contextual.context_position.weight.zero_()
+    contextual.context_position.weight[0, 0] = 1
+    contextual.context_position.weight[1, 0] = -1
+q = torch.tensor([[[1., 0., 0., 0.]]])
+same_embeddings = torch.zeros(1, 3, 4)
+ctx_mask = torch.tensor([[True, True, False]])
+att, _ = contextual.distribution(q, same_embeddings, ctx_mask)
+assert att[0, 0, 0] > att[0, 0, 1]  # Same token embedding, different source position.
+changed_padding = same_embeddings.clone()
+changed_padding[0, 2] = 100
+att_changed, _ = contextual.distribution(q, changed_padding, ctx_mask)
+assert torch.allclose(att, att_changed, atol=1e-6)
+try:
+    contextual.distribution(q, torch.zeros(1, 4, 4), torch.ones(1, 4, dtype=torch.bool))
+except ValueError:
+    pass
+else:
+    raise AssertionError('Context encoder accepted a prompt beyond its position limit')
+learned_context = PromptCopyHead(4, context_layers=1, context_heads=1, context_max_length=3)
+distinct_ids = torch.tensor([[2, 3, 4]])
+context_loss = learned_context.nll(features, base, embeddings, distinct_ids, mask, target, valid,
+                                  attention_aux_weight=.2, gate_aux_weight=.1)
+context_loss.backward()
+assert any(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0
+           for p in learned_context.context_encoder.parameters())
 try:
     head.nll(features, base, embeddings, ids, mask, target, valid, copyable_error_boost=0.5)
 except ValueError:

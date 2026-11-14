@@ -43,13 +43,18 @@ with tempfile.TemporaryDirectory() as directory:
                 '--validation', str(root / 'val.jsonl'), '--output', str(root / 'out'),
                 '--device', 'cpu', '--steps', '2', '--batch-size', '1', '--prefix-length', '8',
                 '--copyable-error-boost', '20', '--attention-aux-weight', '.2',
-                '--gate-aux-weight', '.1', '--gate-positive-weight', '20', '--confidence-aware-gate']
+                '--gate-aux-weight', '.1', '--gate-positive-weight', '20', '--confidence-aware-gate',
+                '--prompt-context-layers', '1', '--prompt-context-heads', '2']
     screen.main()
     result = json.loads((root / 'out/report.json').read_text())
     assert result['train_steps'] == 2 and result['validation_examples'] == 1
     assert result['copyable_error_boost'] == 20
     assert result['attention_aux_weight'] == .2 and result['gate_aux_weight'] == .1
     assert result['confidence_aware_gate'] is True
+    assert result['prompt_context_layers'] == 1
     assert result['before_exact_text'] == result['after_exact_text'] == 1
     assert (root / 'out/copy_head.pt').is_file()
+    saved = torch.load(root / 'out/copy_head.pt', map_location='cpu', weights_only=False)
+    assert any(key.startswith('context_encoder.') for key in saved['model'])
+    assert saved['prompt_context_layers'] == 1 and saved['context_max_length'] == 8
 print('Prompt-copy trainer integration checks passed.')

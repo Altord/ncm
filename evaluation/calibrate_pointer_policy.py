@@ -157,7 +157,11 @@ def main():
     if (saved_head.get('codec_sha256') != sha256_file(args.codec_checkpoint) or
         saved_head.get('train_sha256') != sha256_file(args.train)):
         raise SystemExit('Head was trained with a different codec or training dataset')
-    head = PromptCopyHead(int(cfg.vqvae.embed_dim), confidence_aware_gate=bool(saved_head.get('confidence_aware_gate', False)))
+    head = PromptCopyHead(int(cfg.vqvae.embed_dim),
+                          confidence_aware_gate=bool(saved_head.get('confidence_aware_gate', False)),
+                          context_layers=int(saved_head.get('prompt_context_layers', 0)),
+                          context_heads=int(saved_head.get('prompt_context_heads', 4)),
+                          context_max_length=int(saved_head.get('context_max_length', args.prefix_length)))
     head.load_state_dict(saved_head['model'], strict=True)
     head.to(device).eval().requires_grad_(False)
     train = read_records(args.train, tok, int(cfg.model.context_length), args.prefix_length, int(cfg.vqvae.in_vocab_size))

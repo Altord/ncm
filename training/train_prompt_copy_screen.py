@@ -82,12 +82,16 @@ def main():
     p.add_argument('--gate-positive-weight', type=float, default=1.0)
     p.add_argument('--confidence-aware-gate', action='store_true',
                    help='Give copy gate codec logit margin and prompt-attention signals')
+    p.add_argument('--prompt-context-layers', type=int, default=0,
+                   help='Train this many prompt self-attention layers before pointer attention')
+    p.add_argument('--prompt-context-heads', type=int, default=4)
     args = p.parse_args()
     if (min(args.steps, args.batch_size, args.prefix_length) < 1 or args.lr <= 0 or
         not math.isfinite(args.copyable_error_boost) or args.copyable_error_boost < 1 or
         not math.isfinite(args.attention_aux_weight) or args.attention_aux_weight < 0 or
         not math.isfinite(args.gate_aux_weight) or args.gate_aux_weight < 0 or
-        not math.isfinite(args.gate_positive_weight) or args.gate_positive_weight < 1):
+        not math.isfinite(args.gate_positive_weight) or args.gate_positive_weight < 1 or
+        args.prompt_context_layers < 0 or args.prompt_context_heads < 1):
         p.error('Invalid steps, batch size, prefix length, lr, boost, or auxiliary weights')
     out = Path(args.output)
     if any((out / name).exists() for name in ('copy_head.pt', 'results.jsonl', 'report.json')):
@@ -118,7 +122,9 @@ def main():
     overlap = {r['row']['source'] for r in train} & {r['row']['source'] for r in val}
     if overlap:
         raise SystemExit(f'Train/validation source paths overlap: {sorted(overlap)[:5]}')
-    head = PromptCopyHead(int(cfg.vqvae.embed_dim), confidence_aware_gate=args.confidence_aware_gate).to(device)
+    head = PromptCopyHead(int(cfg.vqvae.embed_dim), confidence_aware_gate=args.confidence_aware_gate,
+                          context_layers=args.prompt_context_layers, context_heads=args.prompt_context_heads,
+                          context_max_length=args.prefix_length).to(device)
     optimizer = torch.optim.AdamW(head.parameters(), lr=args.lr)
     start = time.perf_counter()
     print(f'Training on {len(train)} methods; validating on {len(val)} source-disjoint methods; '
@@ -152,6 +158,8 @@ def main():
                 'attention_aux_weight': args.attention_aux_weight, 'gate_aux_weight': args.gate_aux_weight,
                 'gate_positive_weight': args.gate_positive_weight,
                 'confidence_aware_gate': args.confidence_aware_gate,
+                'prompt_context_layers': args.prompt_context_layers,
+                'prompt_context_heads': args.prompt_context_heads, 'context_max_length': args.prefix_length,
                 'codec_sha256': sha256_file(args.codec_checkpoint),
                 'train_sha256': sha256_file(args.train)}, out / 'copy_head.pt')
     head.eval()
@@ -210,6 +218,7 @@ def main():
               'attention_aux_weight': args.attention_aux_weight, 'gate_aux_weight': args.gate_aux_weight,
               'gate_positive_weight': args.gate_positive_weight,
               'confidence_aware_gate': args.confidence_aware_gate,
+              'prompt_context_layers': args.prompt_context_layers, 'prompt_context_heads': args.prompt_context_heads,
               'before_token_accuracy': total_correct[0] / total_valid, 'after_token_accuracy': total_correct[1] / total_valid,
               'before_exact_text': sum(r['before_exact_text'] for r in result),
               'after_exact_text': sum(r['after_exact_text'] for r in result),

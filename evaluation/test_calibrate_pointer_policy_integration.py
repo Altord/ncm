@@ -39,8 +39,9 @@ with tempfile.TemporaryDirectory() as directory:
         row = {'id': split, 'source': split + '.cs', 'prompt': 'Complete M',
                'target': 'static int M(int x) => x;'}
         (root / f'{split}.jsonl').write_text(json.dumps(row) + '\n')
-    head = PromptCopyHead(8, confidence_aware_gate=True)
+    head = PromptCopyHead(8, confidence_aware_gate=True, context_layers=1, context_heads=2, context_max_length=8)
     torch.save({'model': head.state_dict(), 'confidence_aware_gate': True,
+                'prompt_context_layers': 1, 'prompt_context_heads': 2, 'context_max_length': 8,
                 'codec_sha256': sha256_file(root / 'codec.pt'),
                 'train_sha256': sha256_file(root / 'train.jsonl')}, root / 'head.pt')
     experiment.load_base_tokenizer = lambda cfg: Tokenizer()
