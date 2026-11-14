@@ -36,6 +36,22 @@ boosted = head.nll(features, base, embeddings, ids, mask, target, valid, copyabl
 per_token = -p.gather(-1, target.unsqueeze(-1)).squeeze(-1).log()
 expected_boosted = (20 * per_token[0, 0] + per_token[0, 1]) / 21
 assert torch.allclose(boosted.detach(), expected_boosted.detach(), atol=1e-6)
+combined_loss, components = head.nll(features, base, embeddings, ids, mask, target, valid,
+    copyable_error_boost=20, attention_aux_weight=0.2, gate_aux_weight=0.1,
+    gate_positive_weight=20, return_components=True)
+expected_attention = -attention[0, 0, :2].sum().log()
+gate_labels = torch.tensor([[1., 0.]])
+gate_bce = torch.nn.functional.binary_cross_entropy_with_logits(gate, gate_labels, reduction='none')
+expected_gate = (20 * gate_bce[0, 0] + gate_bce[0, 1]) / 21
+assert torch.allclose(components['copy_attention_nll'], expected_attention.detach(), atol=1e-6)
+assert torch.allclose(components['copy_gate_bce'], expected_gate.detach(), atol=1e-6)
+assert components['copyable_errors'].item() == 1
+assert torch.allclose(combined_loss.detach(),
+                      (expected_boosted + .2 * expected_attention + .1 * expected_gate).detach(), atol=1e-6)
+none_loss, none_components = head.nll(features, base, embeddings, ids, mask,
+    torch.full_like(target, 4), valid, attention_aux_weight=.2, gate_aux_weight=.1,
+    return_components=True)
+assert none_components['copyable_errors'].item() == 0 and torch.isfinite(none_loss)
 try:
     head.nll(features, base, embeddings, ids, mask, target, valid, copyable_error_boost=0.5)
 except ValueError:

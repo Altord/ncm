@@ -77,10 +77,16 @@ def main():
     p.add_argument('--lr', type=float, default=3e-4)
     p.add_argument('--copyable-error-boost', type=float, default=1.0,
                    help='Training loss weight for frozen-codec errors whose target ID appears in the prompt')
+    p.add_argument('--attention-aux-weight', type=float, default=0.0)
+    p.add_argument('--gate-aux-weight', type=float, default=0.0)
+    p.add_argument('--gate-positive-weight', type=float, default=1.0)
     args = p.parse_args()
     if (min(args.steps, args.batch_size, args.prefix_length) < 1 or args.lr <= 0 or
-        not math.isfinite(args.copyable_error_boost) or args.copyable_error_boost < 1):
-        p.error('steps, batch size, prefix length and lr must be positive; boost must be finite and at least 1')
+        not math.isfinite(args.copyable_error_boost) or args.copyable_error_boost < 1 or
+        not math.isfinite(args.attention_aux_weight) or args.attention_aux_weight < 0 or
+        not math.isfinite(args.gate_aux_weight) or args.gate_aux_weight < 0 or
+        not math.isfinite(args.gate_positive_weight) or args.gate_positive_weight < 1):
+        p.error('Invalid steps, batch size, prefix length, lr, boost, or auxiliary weights')
     out = Path(args.output)
     if any((out / name).exists() for name in ('copy_head.pt', 'results.jsonl', 'report.json')):
         raise SystemExit('Existing experiment output; stopping to preserve it')
@@ -119,8 +125,12 @@ def main():
         chosen = [train[rng.randrange(len(train))] for _ in range(args.batch_size)]
         x, valid, prompt, pmask = batch(chosen, device)
         features, logits, embeddings = frozen_codec(codec, x, prompt)
-        loss = head.nll(features, logits, embeddings, prompt, pmask, x, valid,
-                        copyable_error_boost=args.copyable_error_boost)
+        loss, components = head.nll(features, logits, embeddings, prompt, pmask, x, valid,
+                                    copyable_error_boost=args.copyable_error_boost,
+                                    attention_aux_weight=args.attention_aux_weight,
+                                    gate_aux_weight=args.gate_aux_weight,
+                                    gate_positive_weight=args.gate_positive_weight,
+                                    return_components=True)
         if not torch.isfinite(loss):
             raise RuntimeError('Non-finite loss')
         optimizer.zero_grad(set_to_none=True)
@@ -130,12 +140,15 @@ def main():
         if step == 1 or step % 100 == 0 or step == args.steps:
             elapsed = time.perf_counter() - start
             print(json.dumps({'step': step, 'loss': float(loss.detach()),
+                              **{key: float(value) for key, value in components.items()},
                               'steps_per_second': step / max(elapsed, 1e-9),
                               'elapsed_seconds': elapsed,
                               'estimated_training_seconds_remaining': (args.steps-step) * elapsed / step}), flush=True)
     training_seconds = time.perf_counter() - start
     torch.save({'model': head.state_dict(), 'steps': args.steps, 'seed': args.seed,
                 'copyable_error_boost': args.copyable_error_boost,
+                'attention_aux_weight': args.attention_aux_weight, 'gate_aux_weight': args.gate_aux_weight,
+                'gate_positive_weight': args.gate_positive_weight,
                 'codec_sha256': sha256_file(args.codec_checkpoint),
                 'train_sha256': sha256_file(args.train)}, out / 'copy_head.pt')
     head.eval()
@@ -183,6 +196,8 @@ def main():
               'copy_head_parameters': sum(p.numel() for p in head.parameters()),
               'batch_size': args.batch_size, 'prefix_length': args.prefix_length, 'seed': args.seed,
               'copyable_error_boost': args.copyable_error_boost,
+              'attention_aux_weight': args.attention_aux_weight, 'gate_aux_weight': args.gate_aux_weight,
+              'gate_positive_weight': args.gate_positive_weight,
               'before_token_accuracy': total_correct[0] / total_valid, 'after_token_accuracy': total_correct[1] / total_valid,
               'before_exact_text': sum(r['before_exact_text'] for r in result),
               'after_exact_text': sum(r['after_exact_text'] for r in result),
