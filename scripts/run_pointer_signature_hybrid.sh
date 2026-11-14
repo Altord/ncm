@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'ncm_exit_status=$?; printf "\a" || true; exit "$ncm_exit_status"' EXIT
 cd "$(dirname "$0")/.."
 BASE=runs/context256-codec-comparison
 INPUT=examples/godot_csharp_generator_pilot/codec_compile_stress.jsonl
