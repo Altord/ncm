@@ -25,6 +25,7 @@ class PromptCopyHead(nn.Module):
         self.context_encoder = None
         if int(context_layers):
             self.context_position = nn.Embedding(int(context_max_length), width)
+            nn.init.normal_(self.context_position.weight, mean=0.0, std=0.02)
             layer = nn.TransformerEncoderLayer(d_model=width, nhead=int(context_heads),
                 dim_feedforward=4 * width, dropout=0.0, batch_first=True, norm_first=True)
             self.context_encoder = nn.TransformerEncoder(layer, num_layers=int(context_layers),
