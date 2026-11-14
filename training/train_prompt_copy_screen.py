@@ -5,6 +5,7 @@ This diagnostic encodes the target into VQ latents; it is not a generator test.
 from __future__ import annotations
 import argparse
 import json
+import math
 import random
 from pathlib import Path
 import time
@@ -74,9 +75,12 @@ def main():
     p.add_argument('--prefix-length', type=int, default=64)
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--lr', type=float, default=3e-4)
+    p.add_argument('--copyable-error-boost', type=float, default=1.0,
+                   help='Training loss weight for frozen-codec errors whose target ID appears in the prompt')
     args = p.parse_args()
-    if min(args.steps, args.batch_size, args.prefix_length) < 1 or args.lr <= 0:
-        p.error('steps, batch size, prefix length and lr must be positive')
+    if (min(args.steps, args.batch_size, args.prefix_length) < 1 or args.lr <= 0 or
+        not math.isfinite(args.copyable_error_boost) or args.copyable_error_boost < 1):
+        p.error('steps, batch size, prefix length and lr must be positive; boost must be finite and at least 1')
     out = Path(args.output)
     if any((out / name).exists() for name in ('copy_head.pt', 'results.jsonl', 'report.json')):
         raise SystemExit('Existing experiment output; stopping to preserve it')
@@ -115,7 +119,8 @@ def main():
         chosen = [train[rng.randrange(len(train))] for _ in range(args.batch_size)]
         x, valid, prompt, pmask = batch(chosen, device)
         features, logits, embeddings = frozen_codec(codec, x, prompt)
-        loss = head.nll(features, logits, embeddings, prompt, pmask, x, valid)
+        loss = head.nll(features, logits, embeddings, prompt, pmask, x, valid,
+                        copyable_error_boost=args.copyable_error_boost)
         if not torch.isfinite(loss):
             raise RuntimeError('Non-finite loss')
         optimizer.zero_grad(set_to_none=True)
@@ -130,6 +135,7 @@ def main():
                               'estimated_training_seconds_remaining': (args.steps-step) * elapsed / step}), flush=True)
     training_seconds = time.perf_counter() - start
     torch.save({'model': head.state_dict(), 'steps': args.steps, 'seed': args.seed,
+                'copyable_error_boost': args.copyable_error_boost,
                 'codec_sha256': sha256_file(args.codec_checkpoint),
                 'train_sha256': sha256_file(args.train)}, out / 'copy_head.pt')
     head.eval()
@@ -137,6 +143,7 @@ def main():
     total_correct = [0, 0]
     total_valid = 0
     gates = 0.0
+    baseline_errors = copyable_errors = fixed_errors = introduced_errors = copyable_fixed = 0
     with torch.inference_mode():
         for begin in range(0, len(val), args.batch_size):
             group = val[begin:begin + args.batch_size]
@@ -148,6 +155,14 @@ def main():
             total_correct[1] += int(((copied == x) & valid).sum())
             total_valid += int(valid.sum())
             gates += float((gate * valid).sum())
+            wrong = (original != x) & valid
+            copyable = ((prompt[:, None, :] == x[:, :, None]) & pmask[:, None, :]).any(dim=-1)
+            after_wrong = (copied != x) & valid
+            baseline_errors += int(wrong.sum())
+            copyable_errors += int((wrong & copyable).sum())
+            fixed_errors += int((wrong & ~after_wrong).sum())
+            introduced_errors += int((~wrong & after_wrong & valid).sum())
+            copyable_fixed += int((wrong & copyable & ~after_wrong).sum())
             for i, item in enumerate(group):
                 reference = item['row']['target']
                 before = visible_text(tok, original[i].tolist(), int(tok.eos_token_id), int(tok.pad_token_id))
@@ -167,6 +182,7 @@ def main():
               'codec_sha256': sha256_file(args.codec_checkpoint), 'train_steps': args.steps,
               'copy_head_parameters': sum(p.numel() for p in head.parameters()),
               'batch_size': args.batch_size, 'prefix_length': args.prefix_length, 'seed': args.seed,
+              'copyable_error_boost': args.copyable_error_boost,
               'before_token_accuracy': total_correct[0] / total_valid, 'after_token_accuracy': total_correct[1] / total_valid,
               'before_exact_text': sum(r['before_exact_text'] for r in result),
               'after_exact_text': sum(r['after_exact_text'] for r in result),
@@ -176,6 +192,10 @@ def main():
               'after_exact_names': sum(r['after_name_exact'] for r in result),
               'scorable_names': sum(r['name_scorable'] for r in result),
               'mean_copy_gate': gates / total_valid,
+              'baseline_token_errors': baseline_errors,
+              'baseline_errors_with_target_token_in_prompt': copyable_errors,
+              'baseline_errors_fixed': fixed_errors, 'new_token_errors': introduced_errors,
+              'copyable_baseline_errors_fixed': copyable_fixed,
               'training_seconds': training_seconds,
               'peak_gpu_allocated_gib': (torch.cuda.max_memory_allocated(device) / 2**30) if device.type == 'cuda' else None,
               'elapsed_seconds_including_validation': time.perf_counter()-start,

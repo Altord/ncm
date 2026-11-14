@@ -16,6 +16,7 @@ embeddings = torch.randn(1, 3, 4)
 ids = torch.tensor([[2, 2, 3]])
 mask = torch.tensor([[1, 1, 0]], dtype=torch.bool)
 base = torch.randn(1, 2, 5)
+base[0, 0] = torch.tensor([4., 0., 0., 0., 0.])  # Wrong, but prompt includes target ID 2.
 target = torch.tensor([[2, 4]])
 valid = torch.tensor([[1, 1]], dtype=torch.bool)
 attention, gate = head.distribution(features, embeddings, mask)
@@ -31,6 +32,16 @@ assert torch.equal(predicted, p.argmax(-1))
 assert torch.allclose(p.sum(-1), torch.ones(1, 2), atol=1e-6)
 expected = -p.gather(-1, target.unsqueeze(-1)).squeeze(-1).log().mean()
 assert torch.allclose(loss.detach(), expected.detach(), atol=1e-6)
+boosted = head.nll(features, base, embeddings, ids, mask, target, valid, copyable_error_boost=20)
+per_token = -p.gather(-1, target.unsqueeze(-1)).squeeze(-1).log()
+expected_boosted = (20 * per_token[0, 0] + per_token[0, 1]) / 21
+assert torch.allclose(boosted.detach(), expected_boosted.detach(), atol=1e-6)
+try:
+    head.nll(features, base, embeddings, ids, mask, target, valid, copyable_error_boost=0.5)
+except ValueError:
+    pass
+else:
+    raise AssertionError('Invalid boost accepted')
 try:
     head.distribution(features, embeddings, torch.zeros_like(mask))
 except ValueError:

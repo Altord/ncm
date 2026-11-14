@@ -1,4 +1,5 @@
 """Prompt-token pointer mixture for a frozen parallel codec decoder."""
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,7 +24,10 @@ class PromptCopyHead(nn.Module):
         scores = scores.masked_fill(~prompt_mask[:, None, :].bool(), float('-inf'))
         return scores.softmax(dim=-1), self.gate(features.float()).squeeze(-1)
 
-    def nll(self, features, base_logits, prompt_embeddings, prompt_ids, prompt_mask, targets, valid):
+    def nll(self, features, base_logits, prompt_embeddings, prompt_ids, prompt_mask, targets, valid,
+            copyable_error_boost=1.0):
+        if not math.isfinite(copyable_error_boost) or copyable_error_boost < 1:
+            raise ValueError('copyable_error_boost must be finite and at least 1')
         attention, gate_logits = self.distribution(features, prompt_embeddings, prompt_mask)
         matches = (prompt_ids[:, None, :] == targets[:, :, None]) & prompt_mask[:, None, :].bool()
         copy_prob = (attention * matches).sum(dim=-1)
@@ -31,7 +35,8 @@ class PromptCopyHead(nn.Module):
         base_logp = logits.gather(-1, targets.unsqueeze(-1)).squeeze(-1) - torch.logsumexp(logits, dim=-1)
         combined = torch.logaddexp(F.logsigmoid(-gate_logits) + base_logp,
                                    F.logsigmoid(gate_logits) + copy_prob.clamp_min(1e-30).log())
-        mask = valid.float()
+        eligible = matches.any(dim=-1) & (base_logits.argmax(dim=-1) != targets)
+        mask = valid.float() * torch.where(eligible, copyable_error_boost, 1.0)
         return -(combined * mask).sum() / mask.sum().clamp_min(1)
 
     def predict(self, features, base_logits, prompt_embeddings, prompt_ids, prompt_mask):

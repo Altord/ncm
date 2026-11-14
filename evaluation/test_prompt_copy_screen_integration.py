@@ -41,10 +41,12 @@ with tempfile.TemporaryDirectory() as directory:
     sys.argv = ['test', '--codec-config', str(root / 'config.yaml'),
                 '--codec-checkpoint', str(root / 'codec.pt'), '--train', str(root / 'train.jsonl'),
                 '--validation', str(root / 'val.jsonl'), '--output', str(root / 'out'),
-                '--device', 'cpu', '--steps', '2', '--batch-size', '1', '--prefix-length', '8']
+                '--device', 'cpu', '--steps', '2', '--batch-size', '1', '--prefix-length', '8',
+                '--copyable-error-boost', '20']
     screen.main()
     result = json.loads((root / 'out/report.json').read_text())
     assert result['train_steps'] == 2 and result['validation_examples'] == 1
+    assert result['copyable_error_boost'] == 20
     assert result['before_exact_text'] == result['after_exact_text'] == 1
     assert (root / 'out/copy_head.pt').is_file()
 print('Prompt-copy trainer integration checks passed.')
