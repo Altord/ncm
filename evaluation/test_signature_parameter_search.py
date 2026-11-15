@@ -14,5 +14,11 @@ text = 'static bool Check(float value, float epsilon) => value > eWeek ? 1 : val
 candidates, complete = generate_candidates(prompt, text, 12)
 assert complete and len(candidates) == 4
 assert any('value > epsilon ? 1 : value < - epsilon ?' in c for c in candidates)
+prompt = 'Complete this C# method: static bool HasExpired(float timer, float epsilon)'
+text = 'static bool HasExpired(float timer, float epsilon) => timer <= Math.Max(0f, e e);'
+candidates, complete = generate_candidates(prompt, text, 12)
+assert complete and len(candidates) == 2
+assert 'static bool HasExpired(float timer, float epsilon) => timer <= Math.Max(0f, epsilon);' in candidates
+assert all('0f' in c for c in candidates)
 assert generate_candidates('plain language', text, 12) == ([], False)
 print('Signature parameter search checks passed.')

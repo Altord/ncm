@@ -40,7 +40,7 @@ def generate_candidates(prompt, text, limit):
     if not offsets:
         return [], False
     body = text[min(offsets):]
-    tokens = list(re.finditer(r'[A-Za-z_]\w*|\.\.\.|::|\?', body))
+    tokens = list(re.finditer(r'(?<![A-Za-z0-9_])[A-Za-z_]\w*|\.\.\.|::|\?', body))
     spans = []
     for m in tokens:
         word = m.group()
