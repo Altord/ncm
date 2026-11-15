@@ -27,8 +27,10 @@ def main():
     p.add_argument('--lr', type=float, default=0.0003)
     p.add_argument('--error-boost', type=float, default=20.0)
     p.add_argument('--trust-weight', type=float, default=0.05)
+    p.add_argument('--hard-example-probability', type=float, default=0.0,
+                   help='Probability of drawing a training row with at least one frozen-codec token error')
     args = p.parse_args()
-    if min(args.steps, args.batch_size, args.prefix_length) < 1 or args.lr <= 0:
+    if min(args.steps, args.batch_size, args.prefix_length) < 1 or args.lr <= 0 or not 0 <= args.hard_example_probability <= 1:
         p.error('Steps, batch size, prefix length, and learning rate must be positive')
     out = Path(args.output)
     if any((out / name).exists() for name in ('refinement_head.pt', 'results.jsonl', 'report.json')):
@@ -56,12 +58,32 @@ def main():
     overlap = {r['row']['source'] for r in train} & {r['row']['source'] for r in val}
     if overlap:
         raise SystemExit(f'Train and validation source paths overlap: {sorted(overlap)[:5]}')
+    hard = []
+    scan_start = time.perf_counter()
+    if args.hard_example_probability:
+        print('Finding training examples with frozen-codec token errors...', flush=True)
+        with torch.inference_mode():
+            for begin in range(0, len(train), args.batch_size):
+                group = train[begin:begin+args.batch_size]
+                x, valid, prompt, _ = batch(group, device)
+                _, logits, _ = frozen_codec(codec, x, prompt)
+                has_error = (((logits.argmax(-1) != x) & valid).any(-1)).cpu().tolist()
+                hard.extend(item for item, wrong in zip(group, has_error) if wrong)
+                if (begin // args.batch_size + 1) % 50 == 0 or begin+len(group) == len(train):
+                    print(f'Scanned {begin+len(group)}/{len(train)}; hard examples={len(hard)}', flush=True)
+        if not hard:
+            raise SystemExit('No erroneous training examples found; cannot use hard-example sampling')
+    scan_seconds = time.perf_counter()-scan_start
     head = ContextRefinementHead(int(cfg.vqvae.embed_dim), max_prompt_length=args.prefix_length).to(device)
     optim = torch.optim.AdamW(head.parameters(), lr=args.lr)
     start = time.perf_counter()
     print(f'Frozen codec; {len(train)} training and {len(val)} validation methods; head parameters: {sum(p.numel() for p in head.parameters()):,}', flush=True)
     for step in range(1, args.steps + 1):
-        x, valid, prompt, pmask = batch([train[rng.randrange(len(train))] for _ in range(args.batch_size)], device)
+        chosen = []
+        for _ in range(args.batch_size):
+            pool = hard if args.hard_example_probability and rng.random() < args.hard_example_probability else train
+            chosen.append(pool[rng.randrange(len(pool))])
+        x, valid, prompt, pmask = batch(chosen, device)
         features, logits, embeddings = frozen_codec(codec, x, prompt)
         refined = head(features, logits, embeddings, pmask, codec.decoder.output_layer.weight)
         loss, parts = refinement_loss(refined, logits, x, valid, args.error_boost, args.trust_weight)
@@ -77,7 +99,8 @@ def main():
                               'steps_per_second': step / elapsed, 'estimated_seconds_remaining': (args.steps-step)*elapsed/step}), flush=True)
     training_seconds = time.perf_counter() - start
     torch.save({'model': head.state_dict(), 'steps': args.steps, 'seed': args.seed,
-                'prefix_length': args.prefix_length, 'codec_sha256': sha256_file(args.codec_checkpoint)}, out / 'refinement_head.pt')
+                'prefix_length': args.prefix_length, 'codec_sha256': sha256_file(args.codec_checkpoint),
+                'hard_example_probability': args.hard_example_probability}, out / 'refinement_head.pt')
     head.eval()
     results = []
     valid_count = before_correct = after_correct = fixed = introduced = fixed_absent = 0
@@ -114,6 +137,8 @@ def main():
         'train_sha256': sha256_file(args.train), 'validation_sha256': sha256_file(args.validation),
         'codec_sha256': sha256_file(args.codec_checkpoint), 'seed': args.seed, 'error_boost': args.error_boost,
         'trust_weight': args.trust_weight, 'head_parameters': sum(p.numel() for p in head.parameters()),
+        'hard_example_probability': args.hard_example_probability, 'hard_training_examples': len(hard),
+        'hard_example_scan_seconds': scan_seconds,
         'before_token_accuracy': before_correct/valid_count, 'after_token_accuracy': after_correct/valid_count,
         'before_exact_text': sum(r['before_exact_text'] for r in results), 'after_exact_text': sum(r['after_exact_text'] for r in results),
         'new_exact_text': sum(not r['before_exact_text'] and r['after_exact_text'] for r in results),

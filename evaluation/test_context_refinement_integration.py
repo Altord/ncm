@@ -38,10 +38,12 @@ with tempfile.TemporaryDirectory() as directory:
     screen.load_base_tokenizer = lambda cfg: Tokenizer()
     sys.argv = ['test', '--codec-config', str(root/'config.yaml'), '--codec-checkpoint', str(root/'codec.pt'),
                 '--train', str(root/'train.jsonl'), '--validation', str(root/'val.jsonl'), '--output', str(root/'out'),
-                '--device', 'cpu', '--steps', '2', '--batch-size', '1', '--prefix-length', '8']
+                '--device', 'cpu', '--steps', '2', '--batch-size', '1', '--prefix-length', '8',
+                '--hard-example-probability', '0.5']
     screen.main()
     result = json.loads((root/'out/report.json').read_text())
     assert result['train_steps'] == 2 and result['validation_examples'] == 1
+    assert result['hard_training_examples'] == 1 and result['hard_example_probability'] == 0.5
     assert result['before_exact_text'] == result['after_exact_text'] == 1
     assert (root/'out/refinement_head.pt').is_file()
 print('Context refinement integration checks passed.')
