@@ -21,4 +21,16 @@ assert complete and len(candidates) == 2
 assert 'static bool HasExpired(float timer, float epsilon) => timer <= Math.Max(0f, epsilon);' in candidates
 assert all('0f' in c for c in candidates)
 assert generate_candidates('plain language', text, 12) == ([], False)
+prompt = 'Complete this C# method: public void Approve(string manager)'
+text = 'public void Ap");(string manager) =>ILConsoleBy = manager;'
+candidates, _ = generate_candidates(prompt, text, 12, conservative=True)
+assert all('manager = manager' not in c for c in candidates)
+prompt = 'Complete this C# method: public void Process(int sold, int other)'
+text = 'public void Process(int sold, int other) { // product details\n Log(quantity: sold); }'
+assert generate_candidates(prompt, text, 12, conservative=True)[0] == []
+text = 'public void Process(int sold, int other) { // important\n Log(quantity: wrong wrong); }'
+assert generate_candidates(prompt, text, 12, conservative=True)[0] == []
+text = 'public void Process(int sold, int other) { Log(quantity: wrong wrong); }'
+candidates, _ = generate_candidates(prompt, text, 12, conservative=True)
+assert all('quantity:' in c for c in candidates)
 print('Signature parameter search checks passed.')

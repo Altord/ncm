@@ -17,7 +17,7 @@ class Loader:
 screen.AutoTokenizer = Loader
 screen.AutoModelForCausalLM = Loader
 screen.make_signature_prompt = lambda text: 'signature'
-screen.generate_candidates = lambda prompt, before, limit: (['replacement'], True)
+screen.generate_candidates = lambda prompt, before, limit, **kwargs: (['replacement'], True)
 screen.candidate_score = lambda model, tokenizer, prompt, candidate, device: 1.0 if candidate == 'replacement' else 0.0
 with tempfile.TemporaryDirectory() as d:
     root = Path(d)

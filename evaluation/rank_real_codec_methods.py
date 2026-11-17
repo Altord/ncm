@@ -41,7 +41,7 @@ def main():
             prompt = make_signature_prompt(target)
         except ValueError:
             prompt = None
-        candidates, exhausted = generate_candidates(prompt, before, 12) if prompt else ([], False)
+        candidates, exhausted = generate_candidates(prompt, before, 12, conservative=True) if prompt else ([], False)
         # Always include baseline as a choice; deduplicate without consulting target.
         candidates = list(dict.fromkeys([before] + candidates))
         chosen, gap, accepted = before, None, False
@@ -65,7 +65,7 @@ def main():
         'examples_with_alternatives': sum(r['candidate_count'] > 1 for r in results),
         'target_in_candidates_offline': sum(r['target_in_candidates_offline'] for r in results),
         'seconds': time.perf_counter()-start, 'input_sha256': sha256_file(args.input), 'model': args.model,
-        'scope': 'Saved known-target codec reconstructions; target-derived synthetic signature supplied; search and selection use reconstructed text and signature, with target body used for offline scoring only.',
+        'scope': 'Saved known-target codec reconstructions; target-derived synthetic signature supplied; conservative search skips clean syntax and bodies with comments/literals; target body used for offline scoring only.',
         'limitations': 'Threshold was chosen after seeing stress results. Method validation set has been repeatedly used; sample is not an independent test. No compilation or behavioral tests. Uses a separate pretrained LLM.'}
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open('x', encoding='utf-8') as f:

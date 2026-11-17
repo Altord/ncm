@@ -17,7 +17,7 @@ WORDS = {'if', 'else', 'return', 'true', 'false', 'null', 'new', 'out', 'ref', '
          'bool', 'double', 'string', 'var', 'Math', 'MathF', 'static', 'this', 'base'}
 
 
-def generate_candidates(prompt, text, limit):
+def generate_candidates(prompt, text, limit, *, conservative=False):
     """Use prompt signature and reconstructed body only; never target body."""
     if not prompt.startswith(PROMPT_PREFIX):
         return [], False
@@ -35,11 +35,17 @@ def generate_candidates(prompt, text, limit):
         params.append(param.group(1))
     if not params:
         return [], False
+    # Until we have real scope analysis, leave syntactically valid methods alone.
+    if conservative and parse_method(text, require_clean=True) is not None:
+        return [], False
     # Heuristic fallback for malformed headers. Braces in strings/comments can be ambiguous.
     offsets = [i for i in (text.find('=>'), text.find('{')) if i >= 0]
     if not offsets:
         return [], False
     body = text[min(offsets):]
+    # Avoid guessing around comments, literals and directives using a regex lexer.
+    if conservative and any(marker in body for marker in ('//', '/*', '"', "'", '#')):
+        return [], False
     tokens = list(re.finditer(r'(?<![A-Za-z0-9_])[A-Za-z_]\w*|\.\.\.|::|\?', body))
     spans = []
     for m in tokens:
@@ -54,6 +60,9 @@ def generate_candidates(prompt, text, limit):
                 continue
         elif word != '::':
             if word in WORDS or word in params or before.endswith('.') or after.startswith('('):
+                continue
+            # Named argument labels and assignment targets can be API or field names.
+            if conservative and (after.startswith(':') or after.startswith('=')):
                 continue
         # Adjacent unknown identifier fragments often represent one broken name.
         if spans and not body[spans[-1][1]:m.start()].strip() and word not in ('?', '::'):
