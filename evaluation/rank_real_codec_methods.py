@@ -9,6 +9,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from evaluation.evaluate_pointer_stress import make_signature_prompt
 from evaluation.rank_codec_candidates_lm import candidate_score
 from evaluation.signature_parameter_search import generate_candidates
+from evaluation.ast_codec_candidates import ast_candidates
+from evaluation.codec_prompt_signature_copy import copy_signature
 from training.data import sha256_file
 
 
@@ -20,6 +22,7 @@ def main():
     p.add_argument('--max-examples', type=int, default=100)
     p.add_argument('--gap', type=float, default=0.05)
     p.add_argument('--device', default='cuda')
+    p.add_argument('--ast-signature', action='store_true')
     args = p.parse_args()
     if args.max_examples < 1 or args.gap < 0: p.error('Invalid sample size or gap')
     out = Path(args.output)
@@ -41,10 +44,14 @@ def main():
             prompt = make_signature_prompt(target)
         except ValueError:
             prompt = None
-        candidates, exhausted = generate_candidates(prompt, before, 12, conservative=True) if prompt else ([], False)
-        # Always include baseline as a choice; deduplicate without consulting target.
-        candidates = list(dict.fromkeys([before] + candidates))
-        chosen, gap, accepted = before, None, False
+        # Signature copy is deterministic and uses the supplied signature only.
+        initial = copy_signature(prompt, before, fallback=True)[0] if prompt and args.ast_signature else before
+        if prompt and args.ast_signature:
+            candidates, exhausted = ast_candidates(prompt, initial, 12), False
+        else:
+            candidates, exhausted = generate_candidates(prompt, before, 12, conservative=True) if prompt else ([], False)
+        candidates = list(dict.fromkeys([initial] + candidates))
+        chosen, gap, accepted = initial, None, False
         if prompt and len(candidates) >= 2:
             scores = [candidate_score(model, tokenizer, prompt, c, device) for c in candidates]
             order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
@@ -52,7 +59,7 @@ def main():
             if gap >= args.gap and order[0] != 0:
                 chosen, accepted = candidates[order[0]], True
         results.append({'id': row['id'], 'baseline': before, 'selected': chosen, 'candidate_count': len(candidates),
-            'search_exhausted': exhausted, 'gap': gap, 'accepted': accepted,
+            'search_exhausted': exhausted, 'gap': gap, 'accepted': accepted, 'signature_copy_changed': initial != before,
             'before_exact': before == target, 'after_exact': chosen == target,
             'target_in_candidates_offline': target in candidates})
         if len(results) % 10 == 0 or len(results) == len(rows):
@@ -62,10 +69,11 @@ def main():
         'new_exact': sum(not r['before_exact'] and r['after_exact'] for r in results),
         'lost_exact': sum(r['before_exact'] and not r['after_exact'] for r in results),
         'accepted_changes': sum(r['accepted'] for r in results),
+        'signature_copy_changes': sum(r['signature_copy_changed'] for r in results), 'ast_signature_mode': args.ast_signature,
         'examples_with_alternatives': sum(r['candidate_count'] > 1 for r in results),
         'target_in_candidates_offline': sum(r['target_in_candidates_offline'] for r in results),
         'seconds': time.perf_counter()-start, 'input_sha256': sha256_file(args.input), 'model': args.model,
-        'scope': 'Saved known-target codec reconstructions; target-derived synthetic signature supplied; conservative search skips clean syntax and bodies with comments/literals; target body used for offline scoring only.',
+        'scope': 'Saved known-target codec reconstructions; target-derived synthetic signature supplied; target body used for offline scoring only.',
         'limitations': 'Threshold was chosen after seeing stress results. Method validation set has been repeatedly used; sample is not an independent test. No compilation or behavioral tests. Uses a separate pretrained LLM.'}
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open('x', encoding='utf-8') as f:
