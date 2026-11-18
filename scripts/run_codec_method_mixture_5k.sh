@@ -11,7 +11,7 @@ OUT="$BASE/codec-method-mixture-5k"
 if pgrep -f '[p]ython([0-9.]*)? .*training[.](train_tokenizer|train_generator|train_prompt_copy_screen|train_context_refinement_screen)' >/dev/null; then
   echo 'A trainer is already running; finish or stop it first.' >&2; exit 1
 fi
-for f in "$REF/config.yaml" "$REF/artifact/tokenizer.pt" "$REF/validation.jsonl" "$VALIDATION" "$METHODS" "$HELDOUT" "$BASE/codec-method-boundary-rare-repeat/reference.jsonl"; do
+for f in "$REF/config.yaml" "$REF/artifact/tokenizer.pt" "$REF/validation.report.json" "$VALIDATION" "$METHODS" "$HELDOUT" "$BASE/codec-method-boundary-rare-repeat/reference.jsonl"; do
   [ -f "$f" ] || { echo "Missing: $f" >&2; exit 1; }
 done
 for f in "$OUT/config.yaml" "$OUT/mixture.jsonl" "$OUT/mixture.manifest.json" "$OUT/cache/manifest.json" "$OUT/checkpoints/latest.pt" "$OUT/artifact/tokenizer.pt" "$OUT/methods.jsonl"; do
@@ -54,7 +54,9 @@ export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
 .venv/bin/python evaluation/godot_csharp_codec_eval.py \
   --config "$OUT/config.yaml" --checkpoint "$OUT/artifact/tokenizer.pt" \
   --input "$VALIDATION" --text-key text --code-only --batch-size 16 --output "$OUT/validation.jsonl"
-.venv/bin/python evaluation/compare_codec_pairs.py --reference "$REF/validation.jsonl" --candidate "$OUT/validation.jsonl"
+.venv/bin/python -m evaluation.compare_codec_aggregate \
+  --reference-report "$REF/validation.report.json" --candidate-report "$OUT/validation.report.json" \
+  --reference-config "$REF/config.yaml" --candidate-config "$OUT/config.yaml"
 .venv/bin/python evaluation/godot_csharp_codec_eval.py \
   --config "$OUT/config.yaml" --checkpoint "$OUT/artifact/tokenizer.pt" \
   --input "$HELDOUT" --text-key target --code-only --batch-size 16 --output "$OUT/methods.jsonl"
