@@ -55,6 +55,13 @@ def reconstruction_ce(logits, targets, valid, token_weights=None, mask_padding=T
     return raw_ce, weighted_ce
 
 
+def teacher_error_factors(predicted, targets, valid, multiplier):
+    """Upweight known training targets missed by a frozen codec teacher."""
+    if not math.isfinite(multiplier) or multiplier < 1:
+        raise ValueError('teacher error multiplier must be finite and at least 1')
+    return torch.where((predicted != targets) & valid.bool(), multiplier, 1.0)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True)
@@ -208,9 +215,29 @@ def main():
         print(f'Top-{distill_topk} distillation enabled with {len(teachers)} frozen teachers; '
               f'weight={distill_weight}. Only teacher-correct valid tokens contribute; '
               'validation remains unweighted.', flush=True)
+    error_cfg = cfg.train.get('error_teacher', None)
+    error_teacher = None
+    error_multiplier = 1.0
+    if error_cfg and bool(error_cfg.get('enabled', False)):
+        error_multiplier = float(error_cfg.get('multiplier', 2.0))
+        if not math.isfinite(error_multiplier) or error_multiplier < 1:
+            raise ValueError('teacher error multiplier must be finite and at least 1')
+        tc = OmegaConf.load(error_cfg.config)
+        OmegaConf.resolve(tc)
+        if (OmegaConf.to_container(tc.tokenizer, resolve=True) != OmegaConf.to_container(cfg.tokenizer, resolve=True) or
+            OmegaConf.to_container(tc.vqvae, resolve=True) != OmegaConf.to_container(cfg.vqvae, resolve=True) or
+            int(tc.model.context_length) != int(cfg.model.context_length) or
+            sha256_file(tc.data.input) != sha256_file(cfg.data.input)):
+            raise ValueError('Error teacher config is incompatible or uses different training data')
+        error_teacher = VQVAE(**OmegaConf.create(OmegaConf.to_container(tc.vqvae, resolve=True)))
+        error_ckpt = torch.load(error_cfg.checkpoint, map_location='cpu', weights_only=False)
+        error_teacher.load_state_dict(error_ckpt['model'], strict=True)
+        error_teacher.to(device).eval().requires_grad_(False)
+        print(f'Frozen codec error weighting enabled: {error_multiplier:.2f}x on teacher-missed training tokens; validation remains unweighted.', flush=True)
     optim.zero_grad(set_to_none=True)
     running = {"loss": 0.0, "recon_ce": 0.0, "weighted_recon_ce": 0.0, "vq": 0.0,
-               **({'distill_ce': 0.0, 'teacher_correct_fraction': 0.0} if teachers else {})}
+               **({'distill_ce': 0.0, 'teacher_correct_fraction': 0.0} if teachers else {}),
+               **({'teacher_error_fraction': 0.0} if error_teacher is not None else {})}
     micro = 0
     since_log = 0
     last_log_time = time.perf_counter()
@@ -289,6 +316,10 @@ def main():
             x = batch["tokens"].to(device, non_blocking=True).long()
             valid = batch["mask"].to(device, non_blocking=True).bool()
             with autocast_context(device, cfg.train.precision):
+                teacher_errors = None
+                if error_teacher is not None:
+                    with torch.no_grad():
+                        teacher_errors = error_teacher(x)[0].argmax(-1)
                 teacher_topk = []
                 if teachers:
                     with torch.no_grad():
@@ -314,6 +345,10 @@ def main():
                         x, valid, occurrence_weights, float(weight_cfg.get('identifier', 1.5)),
                         repeat_multiplier)
                     reconstruction_weights = reconstruction_weights * repeat_factors
+                if teacher_errors is not None:
+                    error_factors = teacher_error_factors(teacher_errors, x, valid, error_multiplier)
+                    reconstruction_weights = (error_factors if reconstruction_weights is None
+                                              else reconstruction_weights * error_factors)
                 ce, train_ce = reconstruction_ce(
                     logits, x, valid, reconstruction_weights, mask_padding,
                     hard_fraction=hard_fraction, hard_mix=hard_mix, focal_gamma=focal_gamma,
@@ -334,6 +369,9 @@ def main():
             if teachers:
                 running['distill_ce'] += float(distill_ce.detach()) * n_examples
                 running['teacher_correct_fraction'] += float(teacher_fraction.detach()) * n_examples
+            if teacher_errors is not None:
+                fraction = ((teacher_errors != x) & valid).sum() / valid.sum().clamp_min(1)
+                running['teacher_error_fraction'] += float(fraction.detach()) * n_examples
             since_log += n_examples
             if micro % accum:
                 continue
