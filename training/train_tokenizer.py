@@ -141,12 +141,17 @@ def main():
                     "Per-occurrence loss weights are enabled, but the prepared cache "
                     "has no token_weights.bin; rerun training.prepare_data"
                 )
+            requested_comment = weight_cfg.get('comment', None)
+            if requested_comment is not None and manifest.get('comment_weight') != float(requested_comment):
+                raise ValueError('Prepared cache comment weight does not match configuration; prepare a matching cache')
             print(
                 "Per-occurrence reconstruction weighting enabled: "
                 f"syntax={float(weight_cfg.get('syntax', 3.0))}, "
                 f"identifier/literal={float(weight_cfg.get('identifier', 1.5))}; "
                 "validation metrics remain unweighted.", flush=True
             )
+            if requested_comment is not None:
+                print(f'Comment occurrence weighting enabled: {float(requested_comment):.2f}.', flush=True)
         else:
             tokenizer = load_base_tokenizer(cfg.tokenizer)
             token_weights = torch.tensor(make_code_token_weights(

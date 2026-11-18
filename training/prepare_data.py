@@ -48,6 +48,11 @@ def prepare_tokenizer(cfg):
         repeated_identifier_weight = float(repeated_identifier_weight)
         if not occurrence_weights or not math.isfinite(repeated_identifier_weight) or repeated_identifier_weight <= 0:
             raise ValueError('repeated_identifier requires positive finite per-occurrence weighting')
+    comment_weight = weight_cfg.get('comment', None) if weight_cfg else None
+    if comment_weight is not None:
+        comment_weight = float(comment_weight)
+        if not occurrence_weights or not math.isfinite(comment_weight) or comment_weight <= 0:
+            raise ValueError('comment requires positive finite per-occurrence weighting')
     hf_tokenizer = getattr(tok, "hf_tokenizer", None)
     if occurrence_weights and (hf_tokenizer is None or not getattr(hf_tokenizer, "is_fast", False)):
         raise ValueError("Per-occurrence code weights require a fast Hugging Face tokenizer")
@@ -77,6 +82,7 @@ def prepare_tokenizer(cfg):
                         float(weight_cfg.get("identifier", 1.5)),
                         method_name_weight=method_name_weight,
                         repeated_identifier_weight=repeated_identifier_weight,
+                        comment_weight=comment_weight,
                     )
                 else:
                     # Keep project/XML records in the corpus without pretending they
@@ -135,6 +141,7 @@ def prepare_tokenizer(cfg):
         "occurrence_weighted": occurrence_weights,
         "method_name_weight": method_name_weight,
         "repeated_identifier_weight": repeated_identifier_weight,
+        "comment_weight": comment_weight,
     })
     print(f"Prepared {count:,} sequences at {out}", flush=True)
 

@@ -59,7 +59,8 @@ def token_occurrence_weights(text: str, offsets: list[tuple[int, int]],
                              syntax_weight: float, identifier_weight: float,
                              default_weight: float = 1.0,
                              method_name_weight: float | None = None,
-                             repeated_identifier_weight: float | None = None) -> list[float]:
+                             repeated_identifier_weight: float | None = None,
+                             comment_weight: float | None = None) -> list[float]:
     """Label tokenizer offsets using this occurrence's C# syntax tree.
 
     BPE pieces that overlap an identifier or literal receive identifier weight;
@@ -70,13 +71,15 @@ def token_occurrence_weights(text: str, offsets: list[tuple[int, int]],
     byte_to_char = byte_to_char_offsets(text)
     labels = bytearray(len(text))  # 0=other, 1=syntax, 2=identifier/literal
     for node in _walk(tree.root_node):
-        if node.type in COMMENT_NODES:
+        if node.type in COMMENT_NODES and comment_weight is None:
             continue
         start = byte_to_char[min(node.start_byte, len(byte_to_char) - 1)]
         end = byte_to_char[min(node.end_byte, len(byte_to_char) - 1)]
         if end <= start:
             continue
-        if node.type in IDENTIFIER_NODES or node.type in LITERAL_NODES:
+        if node.type in COMMENT_NODES:
+            label = 5
+        elif node.type in IDENTIFIER_NODES or node.type in LITERAL_NODES:
             label = 2
         elif node.child_count == 0:
             label = 1
@@ -118,7 +121,8 @@ def token_occurrence_weights(text: str, offsets: list[tuple[int, int]],
             continue
         label = max(labels[start:end], default=0)
         # Prefer identifier/literal weight when a BPE piece includes its leading space.
-        weights.append(float(repeated_identifier_weight) if label == 4
+        weights.append(float(comment_weight) if label == 5
+                       else float(repeated_identifier_weight) if label == 4
                        else float(method_name_weight) if label == 3
                        else float(identifier_weight) if label == 2
                        else float(syntax_weight) if label == 1
