@@ -18,7 +18,7 @@ from models.vqvae import VQVAE
 from training.engine import (Run, autocast_context, checkpoint_state, device_from,
                              export_artifact, load_resume, lr_for_step,
                              make_loader, make_scaler, seed_all)
-from training.data import load_base_tokenizer, sha256_file
+from training.data import MemmapCache, load_base_tokenizer, sha256_file
 from training.reconstruction_loss import (make_code_token_weights, select_reconstruction_weights,
                                           training_token_frequency_weights,
                                           repeated_identifier_piece_factors,
@@ -185,13 +185,21 @@ def main():
     rare_cfg = cfg.train.get('rare_token_weights', None)
     rare_weights = None
     if rare_cfg and bool(rare_cfg.get('enabled', False)):
+        reference_cache = rare_cfg.get('reference_cache_dir', None)
+        rarity_source = MemmapCache(reference_cache) if reference_cache else loader.dataset
+        if reference_cache:
+            for key in ('tokenizer', 'tokenizer_model_id', 'sequence_length', 'pad_id', 'eos_id'):
+                if rarity_source.manifest.get(key) != loader.dataset.manifest.get(key):
+                    raise ValueError(f'Reference rarity cache {key} differs from training cache')
         weights_cpu, counts = training_token_frequency_weights(
-            loader.dataset, int(cfg.vqvae.in_vocab_size),
+            rarity_source, int(cfg.vqvae.in_vocab_size),
             int(rare_cfg.get('threshold', 32)), float(rare_cfg.get('max_weight', 2.0)))
         rare_weights = weights_cpu.to(device)
         print(f"Training-token rarity weights enabled: {(counts > 0).sum()} observed IDs, "
               f"{int((weights_cpu > 1).sum())} upweighted; threshold={int(rare_cfg.get('threshold', 32))}, "
               f"cap={float(rare_cfg.get('max_weight', 2.0)):.2f}. Validation remains unweighted.", flush=True)
+        if reference_cache:
+            print(f'Rarity counts fixed from reference cache: {reference_cache}', flush=True)
     distill_cfg = cfg.train.get('distillation', None)
     teachers = []
     distill_weight = float(distill_cfg.get('weight', 0.0)) if distill_cfg else 0.0
