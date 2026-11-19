@@ -37,3 +37,13 @@ try:
 except ValueError:
     pass
 print('Context refinement checks passed.')
+
+sequence_head = ContextRefinementHead(8, context_heads=2, max_prompt_length=4,
+                                      bottleneck=4, sequence_layers=1, max_sequence_length=3)
+assert torch.equal(sequence_head(features, logits, prompt, mask, weight), logits)
+with torch.no_grad():
+    sequence_head.up.weight.normal_()
+sequence_output = sequence_head(features, logits, prompt, mask, weight)
+sequence_output.square().mean().backward()
+assert any(p.grad is not None and torch.isfinite(p.grad).all() for p in sequence_head.sequence_encoder.parameters())
+print('Sequence refinement checks passed.')

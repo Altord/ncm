@@ -29,8 +29,9 @@ def main():
     p.add_argument('--trust-weight', type=float, default=0.05)
     p.add_argument('--hard-example-probability', type=float, default=0.0,
                    help='Probability of drawing a training row with at least one frozen-codec token error')
+    p.add_argument('--sequence-layers', type=int, default=0)
     args = p.parse_args()
-    if min(args.steps, args.batch_size, args.prefix_length) < 1 or args.lr <= 0 or not 0 <= args.hard_example_probability <= 1:
+    if min(args.steps, args.batch_size, args.prefix_length) < 1 or args.lr <= 0 or args.sequence_layers < 0 or not 0 <= args.hard_example_probability <= 1:
         p.error('Steps, batch size, prefix length, and learning rate must be positive')
     out = Path(args.output)
     if any((out / name).exists() for name in ('refinement_head.pt', 'results.jsonl', 'report.json')):
@@ -74,7 +75,8 @@ def main():
         if not hard:
             raise SystemExit('No erroneous training examples found; cannot use hard-example sampling')
     scan_seconds = time.perf_counter()-scan_start
-    head = ContextRefinementHead(int(cfg.vqvae.embed_dim), max_prompt_length=args.prefix_length).to(device)
+    head = ContextRefinementHead(int(cfg.vqvae.embed_dim), max_prompt_length=args.prefix_length,
+                                 sequence_layers=args.sequence_layers, max_sequence_length=int(cfg.model.context_length)).to(device)
     optim = torch.optim.AdamW(head.parameters(), lr=args.lr)
     start = time.perf_counter()
     print(f'Frozen codec; {len(train)} training and {len(val)} validation methods; head parameters: {sum(p.numel() for p in head.parameters()):,}', flush=True)
@@ -100,7 +102,8 @@ def main():
     training_seconds = time.perf_counter() - start
     torch.save({'model': head.state_dict(), 'steps': args.steps, 'seed': args.seed,
                 'prefix_length': args.prefix_length, 'codec_sha256': sha256_file(args.codec_checkpoint),
-                'hard_example_probability': args.hard_example_probability}, out / 'refinement_head.pt')
+                'hard_example_probability': args.hard_example_probability,
+                'sequence_layers': args.sequence_layers, 'max_sequence_length': int(cfg.model.context_length)}, out / 'refinement_head.pt')
     head.eval()
     results = []
     valid_count = before_correct = after_correct = fixed = introduced = fixed_absent = 0
@@ -137,7 +140,7 @@ def main():
         'train_sha256': sha256_file(args.train), 'validation_sha256': sha256_file(args.validation),
         'codec_sha256': sha256_file(args.codec_checkpoint), 'seed': args.seed, 'error_boost': args.error_boost,
         'trust_weight': args.trust_weight, 'head_parameters': sum(p.numel() for p in head.parameters()),
-        'hard_example_probability': args.hard_example_probability, 'hard_training_examples': len(hard),
+        'hard_example_probability': args.hard_example_probability, 'hard_training_examples': len(hard), 'sequence_layers': args.sequence_layers,
         'hard_example_scan_seconds': scan_seconds,
         'before_token_accuracy': before_correct/valid_count, 'after_token_accuracy': after_correct/valid_count,
         'before_exact_text': sum(r['before_exact_text'] for r in results), 'after_exact_text': sum(r['after_exact_text'] for r in results),

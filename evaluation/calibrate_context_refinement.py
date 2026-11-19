@@ -39,7 +39,9 @@ def main():
     if saved['codec_sha256'] != sha256_file(args.codec_checkpoint):
         raise SystemExit('Head checkpoint codec hash does not match')
     prefix = int(saved['prefix_length'])
-    head = ContextRefinementHead(int(cfg.vqvae.embed_dim), max_prompt_length=prefix).to(device)
+    head = ContextRefinementHead(int(cfg.vqvae.embed_dim), max_prompt_length=prefix,
+                                 sequence_layers=int(saved.get('sequence_layers', 0)),
+                                 max_sequence_length=int(saved.get('max_sequence_length', cfg.model.context_length))).to(device)
     head.load_state_dict(saved['model'], strict=True)
     head.eval()
     rows = read_records(args.validation, tok, int(cfg.model.context_length), prefix, int(cfg.vqvae.in_vocab_size))

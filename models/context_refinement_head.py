@@ -6,9 +6,10 @@ import torch.nn.functional as F
 
 
 class ContextRefinementHead(nn.Module):
-    def __init__(self, width, context_heads=4, max_prompt_length=256, bottleneck=64):
+    def __init__(self, width, context_heads=4, max_prompt_length=256, bottleneck=64,
+                 sequence_layers=0, max_sequence_length=256):
         super().__init__()
-        if width % context_heads or min(context_heads, max_prompt_length, bottleneck) < 1:
+        if width % context_heads or min(context_heads, max_prompt_length, bottleneck, max_sequence_length) < 1 or sequence_layers < 0:
             raise ValueError('Invalid refinement head dimensions')
         self.position = nn.Embedding(max_prompt_length, width)
         nn.init.normal_(self.position.weight, mean=0.0, std=0.02)
@@ -16,6 +17,14 @@ class ContextRefinementHead(nn.Module):
             dim_feedforward=4 * width, dropout=0.0, batch_first=True, norm_first=True)
         self.context_encoder = nn.TransformerEncoder(layer, num_layers=1, enable_nested_tensor=False)
         self.query_norm = nn.LayerNorm(width)
+        self.sequence_encoder = None
+        if sequence_layers:
+            self.sequence_position = nn.Embedding(max_sequence_length, width)
+            nn.init.normal_(self.sequence_position.weight, mean=0.0, std=0.02)
+            self.sequence_input_norm = nn.LayerNorm(width)
+            sequence_layer = nn.TransformerEncoderLayer(d_model=width, nhead=context_heads,
+                dim_feedforward=4 * width, dropout=0.0, batch_first=True, norm_first=True)
+            self.sequence_encoder = nn.TransformerEncoder(sequence_layer, num_layers=sequence_layers, enable_nested_tensor=False)
         self.cross_attention = nn.MultiheadAttention(width, context_heads, dropout=0.0, batch_first=True)
         self.down = nn.Linear(2 * width, bottleneck)
         self.up = nn.Linear(bottleneck, width, bias=False)
@@ -29,9 +38,16 @@ class ContextRefinementHead(nn.Module):
         positions = torch.arange(prompt_embeddings.shape[1], device=prompt_embeddings.device)
         context = prompt_embeddings.float() + self.position(positions)[None, :, :]
         context = self.context_encoder(context, src_key_padding_mask=~prompt_mask.bool())
-        attention, _ = self.cross_attention(self.query_norm(features.float()), context, context,
+        query = features.float()
+        if self.sequence_encoder is not None:
+            if query.shape[1] > self.sequence_position.num_embeddings:
+                raise ValueError('Decoded sequence exceeds position limit')
+            positions = torch.arange(query.shape[1], device=query.device)
+            predicted_embeddings = F.embedding(base_logits.argmax(-1), output_weight.float())
+            query = self.sequence_encoder(self.sequence_input_norm(query + predicted_embeddings + self.sequence_position(positions)[None, :, :]))
+        attention, _ = self.cross_attention(self.query_norm(query), context, context,
                                            key_padding_mask=~prompt_mask.bool(), need_weights=False)
-        delta = self.up(F.gelu(self.down(torch.cat((features.float(), attention), dim=-1))))
+        delta = self.up(F.gelu(self.down(torch.cat((query, attention), dim=-1))))
         return base_logits.float() + F.linear(delta, output_weight.float())
 
 

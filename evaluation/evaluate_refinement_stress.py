@@ -57,7 +57,9 @@ def main():
     if ckpt['codec_sha256'] != codec_hash:
         raise SystemExit('Head codec hash mismatch')
     prefix = int(ckpt['prefix_length'])
-    head = ContextRefinementHead(int(cfg.vqvae.embed_dim), max_prompt_length=prefix).to(device)
+    head = ContextRefinementHead(int(cfg.vqvae.embed_dim), max_prompt_length=prefix,
+                                 sequence_layers=int(ckpt.get('sequence_layers', 0)),
+                                 max_sequence_length=int(ckpt.get('max_sequence_length', cfg.model.context_length))).to(device)
     head.load_state_dict(ckpt['model'], strict=True)
     head.eval()
     rows = [make_batch_row(row, tok, int(cfg.model.context_length), prefix, int(cfg.vqvae.in_vocab_size)) for row in originals]
