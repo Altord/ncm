@@ -205,6 +205,7 @@ def main():
     cached_teacher = bool(distill_cfg and distill_cfg.get('cached_ensemble', False))
     distill_weight = float(distill_cfg.get('weight', 0.0)) if distill_cfg else 0.0
     distill_topk = int(distill_cfg.get('topk', 4)) if distill_cfg else 4
+    student_errors_only = bool(distill_cfg and distill_cfg.get('student_errors_only', False))
     if not math.isfinite(distill_weight) or distill_weight < 0:
         raise ValueError('distillation weight must be finite and nonnegative')
     if cached_teacher and not distill_weight:
@@ -241,6 +242,8 @@ def main():
               f'({"cached ensemble" if cached_teacher else "online"}); '
               f'weight={distill_weight}. Only teacher-correct valid tokens contribute; '
               'validation remains unweighted.', flush=True)
+        if student_errors_only:
+            print('Distillation is further restricted to tokens currently missed by the student.', flush=True)
     error_cfg = cfg.train.get('error_teacher', None)
     error_teacher = None
     error_multiplier = 1.0
@@ -262,7 +265,8 @@ def main():
         print(f'Frozen codec error weighting enabled: {error_multiplier:.2f}x on teacher-missed training tokens; validation remains unweighted.', flush=True)
     optim.zero_grad(set_to_none=True)
     running = {"loss": 0.0, "recon_ce": 0.0, "weighted_recon_ce": 0.0, "vq": 0.0,
-               **({'distill_ce': 0.0, 'teacher_correct_fraction': 0.0} if teachers or cached_teacher else {}),
+               **({'distill_ce': 0.0, 'distill_eligible_fraction': 0.0} if (teachers or cached_teacher) and student_errors_only else
+                  {'distill_ce': 0.0, 'teacher_correct_fraction': 0.0} if teachers or cached_teacher else {}),
                **({'teacher_error_fraction': 0.0} if error_teacher is not None else {})}
     micro = 0
     since_log = 0
@@ -384,7 +388,8 @@ def main():
                 )
                 loss = train_ce + vq_weight * vq_loss.float()
                 if teacher_topk:
-                    distill_ce, teacher_count = topk_teacher_distillation_loss(logits, x, valid, teacher_topk)
+                    distill_ce, teacher_count = topk_teacher_distillation_loss(
+                        logits, x, valid, teacher_topk, student_errors_only=student_errors_only)
                     loss = loss + distill_weight * distill_ce
                     teacher_fraction = teacher_count / (valid.sum().clamp_min(1) * len(teacher_topk))
             last_util = {"per_level_codebook_utilization": per_level_util,
@@ -397,7 +402,8 @@ def main():
                 running[key] += float(val.detach()) * n_examples
             if teacher_topk:
                 running['distill_ce'] += float(distill_ce.detach()) * n_examples
-                running['teacher_correct_fraction'] += float(teacher_fraction.detach()) * n_examples
+                metric = 'distill_eligible_fraction' if student_errors_only else 'teacher_correct_fraction'
+                running[metric] += float(teacher_fraction.detach()) * n_examples
             if teacher_errors is not None:
                 fraction = ((teacher_errors != x) & valid).sum() / valid.sum().clamp_min(1)
                 running['teacher_error_fraction'] += float(fraction.detach()) * n_examples

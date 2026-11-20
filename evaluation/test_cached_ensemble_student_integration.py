@@ -37,13 +37,13 @@ with tempfile.TemporaryDirectory() as d:
             'num_workers':0, 'max_steps':1, 'warmup_steps':0, 'lr':.0003, 'min_lr':.00003,
             'betas':[.9,.95], 'weight_decay':.01, 'grad_clip':1., 'log_every':1, 'save_every':1,
             'run_dir':str(root/'run'), 'artifact_dir':str(root/'artifact'),
-            'distillation':{'weight':.1, 'topk':2, 'cached_ensemble':True,
+            'distillation':{'weight':.1, 'topk':2, 'cached_ensemble':True, 'student_errors_only':True,
                             'teachers':[{'checkpoint':str(p)} for p in teachers]}}})
     OmegaConf.save(cfg, root/'config.yaml')
     sys.argv = ['test', '--config', str(root/'config.yaml')]
     with contextlib.redirect_stdout(io.StringIO()): trainer.main()
     assert (root/'artifact'/'tokenizer.pt').is_file()
     record = json.loads((root/'run'/'logs'/'train.jsonl').read_text().splitlines()[0])
-    assert 'distill_ce' in record and 'teacher_correct_fraction' in record
+    assert 'distill_ce' in record and 'distill_eligible_fraction' in record
     gc.collect()
 print('Cached ensemble student training checks passed.')

@@ -19,6 +19,21 @@ def main():
     assert count.item() == 1 and torch.allclose(loss, expected)
     loss.backward()
     assert logits.grad[0, 0].abs().sum() > 0 and logits.grad[0, 1:].abs().sum() == 0
+    # Correct teacher + correct student must be skipped by the targeted variant.
+    focused_logits = torch.tensor([[[0., 0., 0., 5.], [5., 0., 0., 0.]]], requires_grad=True)
+    focused_targets = torch.tensor([[3, 2]])
+    focused_indices = torch.tensor([[[3, 2], [2, 0]]])
+    focused_probs = torch.tensor([[[.75, .25], [.75, .25]]])
+    focused, count = topk_teacher_distillation_loss(
+        focused_logits, focused_targets, torch.tensor([[True, True]]),
+        [(focused_indices, focused_probs)], student_errors_only=True)
+    assert count.item() == 1
+    focused.backward()
+    assert focused_logits.grad[0, 0].abs().sum() == 0 and focused_logits.grad[0, 1].abs().sum() > 0
+    none, count = topk_teacher_distillation_loss(
+        focused_logits, focused_targets, torch.tensor([[True, False]]),
+        [(focused_indices, focused_probs)], student_errors_only=True)
+    assert count.item() == 0 and none.item() == 0
     wrong_targets = torch.zeros_like(targets)
     empty_loss, count = topk_teacher_distillation_loss(logits, wrong_targets, torch.tensor([[True, False, False]]), [(indices, probabilities)])
     assert count.item() == 0 and empty_loss.item() == 0

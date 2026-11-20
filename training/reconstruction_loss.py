@@ -59,7 +59,7 @@ def repeated_identifier_piece_factors(targets, valid, occurrence_weights,
                        torch.ones_like(occurrence_weights))
 
 
-def topk_teacher_distillation_loss(student_logits, targets, valid, teacher_topk):
+def topk_teacher_distillation_loss(student_logits, targets, valid, teacher_topk, *, student_errors_only=False):
     """Train toward teacher top-k distributions only where that teacher's top-1 is correct.
 
     Teachers supply detached (indices, normalized probabilities) tensors. The
@@ -74,6 +74,8 @@ def topk_teacher_distillation_loss(student_logits, targets, valid, teacher_topk)
         if indices.shape != probabilities.shape or indices.shape[:2] != targets.shape:
             raise ValueError('Teacher top-k shape must match targets')
         mask = valid.bool() & (indices[..., 0] == targets)
+        if student_errors_only:
+            mask = mask & (student_logits.detach().argmax(-1) != targets)
         chosen = student_logits.gather(-1, indices).float()
         token_loss = log_normalizer - (probabilities * chosen).sum(dim=-1)
         numerator = numerator + (token_loss * mask).sum()
