@@ -202,17 +202,29 @@ def main():
             print(f'Rarity counts fixed from reference cache: {reference_cache}', flush=True)
     distill_cfg = cfg.train.get('distillation', None)
     teachers = []
+    cached_teacher = bool(distill_cfg and distill_cfg.get('cached_ensemble', False))
     distill_weight = float(distill_cfg.get('weight', 0.0)) if distill_cfg else 0.0
     distill_topk = int(distill_cfg.get('topk', 4)) if distill_cfg else 4
     if not math.isfinite(distill_weight) or distill_weight < 0:
         raise ValueError('distillation weight must be finite and nonnegative')
+    if cached_teacher and not distill_weight:
+        raise ValueError('cached ensemble requires a positive distillation weight')
     if distill_weight:
         if distill_topk < 2 or distill_topk > int(cfg.vqvae.in_vocab_size):
             raise ValueError('distillation topk must be between 2 and codec vocabulary size')
         specs = list(distill_cfg.get('teachers', []))
         if not specs:
             raise ValueError('distillation requires at least one teacher')
-        for spec in specs:
+        if cached_teacher:
+            cached = loader.dataset.manifest.get('ensemble_distillation', {})
+            if (cached.get('topk') != distill_topk or
+                cached.get('checkpoint_sha256') != [sha256_file(spec.checkpoint) for spec in specs] or
+                any(name not in loader.dataset._arrays for name in ('ensemble_topk_ids', 'ensemble_topk_probs'))):
+                raise ValueError('Cached ensemble teacher does not match the requested checkpoints or top-k')
+            shape = (len(loader.dataset), int(cfg.model.context_length), distill_topk)
+            if any(loader.dataset._arrays[name].shape != shape for name in ('ensemble_topk_ids', 'ensemble_topk_probs')):
+                raise ValueError('Cached ensemble teacher arrays have an unexpected shape')
+        for spec in ([] if cached_teacher else specs):
             tc = OmegaConf.load(spec.config)
             OmegaConf.resolve(tc)
             if (OmegaConf.to_container(tc.tokenizer, resolve=True) != OmegaConf.to_container(cfg.tokenizer, resolve=True) or
@@ -225,7 +237,8 @@ def main():
             teacher.load_state_dict(ckpt['model'], strict=True)
             teacher.to(device).eval().requires_grad_(False)
             teachers.append(teacher)
-        print(f'Top-{distill_topk} distillation enabled with {len(teachers)} frozen teachers; '
+        print(f'Top-{distill_topk} distillation enabled with {len(specs)} frozen teachers '
+              f'({"cached ensemble" if cached_teacher else "online"}); '
               f'weight={distill_weight}. Only teacher-correct valid tokens contribute; '
               'validation remains unweighted.', flush=True)
     error_cfg = cfg.train.get('error_teacher', None)
@@ -249,7 +262,7 @@ def main():
         print(f'Frozen codec error weighting enabled: {error_multiplier:.2f}x on teacher-missed training tokens; validation remains unweighted.', flush=True)
     optim.zero_grad(set_to_none=True)
     running = {"loss": 0.0, "recon_ce": 0.0, "weighted_recon_ce": 0.0, "vq": 0.0,
-               **({'distill_ce': 0.0, 'teacher_correct_fraction': 0.0} if teachers else {}),
+               **({'distill_ce': 0.0, 'teacher_correct_fraction': 0.0} if teachers or cached_teacher else {}),
                **({'teacher_error_fraction': 0.0} if error_teacher is not None else {})}
     micro = 0
     since_log = 0
@@ -334,6 +347,9 @@ def main():
                     with torch.no_grad():
                         teacher_errors = error_teacher(x)[0].argmax(-1)
                 teacher_topk = []
+                if cached_teacher:
+                    teacher_topk.append((batch['ensemble_topk_ids'].to(device, non_blocking=True).long(),
+                                         batch['ensemble_topk_probs'].to(device, non_blocking=True).float()))
                 if teachers:
                     with torch.no_grad():
                         for teacher in teachers:
@@ -367,10 +383,10 @@ def main():
                     hard_fraction=hard_fraction, hard_mix=hard_mix, focal_gamma=focal_gamma,
                 )
                 loss = train_ce + vq_weight * vq_loss.float()
-                if teachers:
+                if teacher_topk:
                     distill_ce, teacher_count = topk_teacher_distillation_loss(logits, x, valid, teacher_topk)
                     loss = loss + distill_weight * distill_ce
-                    teacher_fraction = teacher_count / (valid.sum().clamp_min(1) * len(teachers))
+                    teacher_fraction = teacher_count / (valid.sum().clamp_min(1) * len(teacher_topk))
             last_util = {"per_level_codebook_utilization": per_level_util,
                          "global_codebook_utilization": global_util}
             scaler.scale(loss / accum).backward()
@@ -379,7 +395,7 @@ def main():
             for key, val in (("loss", loss), ("recon_ce", ce),
                              ("weighted_recon_ce", train_ce), ("vq", vq_loss)):
                 running[key] += float(val.detach()) * n_examples
-            if teachers:
+            if teacher_topk:
                 running['distill_ce'] += float(distill_ce.detach()) * n_examples
                 running['teacher_correct_fraction'] += float(teacher_fraction.detach()) * n_examples
             if teacher_errors is not None:
