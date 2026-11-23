@@ -144,6 +144,9 @@ def main():
             requested_comment = weight_cfg.get('comment', None)
             if requested_comment is not None and manifest.get('comment_weight') != float(requested_comment):
                 raise ValueError('Prepared cache comment weight does not match configuration; prepare a matching cache')
+            requested_literal = weight_cfg.get('literal', None)
+            if requested_literal is not None and manifest.get('literal_weight') != float(requested_literal):
+                raise ValueError('Prepared cache literal weight does not match configuration; prepare a matching cache')
             print(
                 "Per-occurrence reconstruction weighting enabled: "
                 f"syntax={float(weight_cfg.get('syntax', 3.0))}, "
@@ -152,6 +155,8 @@ def main():
             )
             if requested_comment is not None:
                 print(f'Comment occurrence weighting enabled: {float(requested_comment):.2f}.', flush=True)
+            if requested_literal is not None:
+                print(f'Literal occurrence weighting enabled: {float(requested_literal):.2f}.', flush=True)
         else:
             tokenizer = load_base_tokenizer(cfg.tokenizer)
             token_weights = torch.tensor(make_code_token_weights(
