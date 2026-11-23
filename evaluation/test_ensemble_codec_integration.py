@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory() as d:
     source = root/'input.jsonl'
     target = 'static int M() => 1;'
     source.write_text(json.dumps({'id':'one', 'target':target})+'\n')
-    for name in ('a', 'b'):
+    for name in ('a', 'b', 'c'):
         OmegaConf.save(cfg, root/f'{name}.yaml')
         torch.save({'model': VQVAE(**cfg.vqvae).state_dict()}, root/f'{name}.pt')
         (root/f'{name}.jsonl').write_text(json.dumps({'id':'one', 'target':target, 'reconstructed':target})+'\n')
@@ -48,4 +48,10 @@ with tempfile.TemporaryDirectory() as d:
         screen.main()
     result = json.loads((root/'out.report.json').read_text())
     assert result['examples'] == 1 and result['ensemble_exact'] == 1
+    sys.argv += ['--config-c', str(root/'c.yaml'), '--checkpoint-c', str(root/'c.pt'), '--saved-c', str(root/'c.jsonl')]
+    sys.argv[sys.argv.index('--output')+1] = str(root/'three.jsonl')
+    with contextlib.redirect_stdout(io.StringIO()):
+        screen.main()
+    result = json.loads((root/'three.report.json').read_text())
+    assert result['examples'] == 1 and result['ensemble_exact'] == 1 and 'checkpoint_c_sha256' in result
 print('Two-codec ensemble integration checks passed.')
