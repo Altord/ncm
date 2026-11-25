@@ -209,6 +209,16 @@ def main():
     teachers = []
     cached_teacher = bool(distill_cfg and distill_cfg.get('cached_ensemble', False))
     distill_weight = float(distill_cfg.get('weight', 0.0)) if distill_cfg else 0.0
+    continuous_cfg = cfg.train.get('continuous_distillation', {})
+    continuous_weight = float(continuous_cfg.get('weight', 0.0))
+    continuous_topk = int(continuous_cfg.get('topk', 4))
+    if not math.isfinite(continuous_weight) or continuous_weight < 0:
+        raise ValueError('continuous_distillation weight must be finite and nonnegative')
+    if continuous_weight and (continuous_topk < 1 or continuous_topk > int(cfg.vqvae.in_vocab_size) or model.autoregressive_decoder):
+        raise ValueError('continuous_distillation requires valid topk and a parallel decoder')
+    if continuous_weight:
+        print(f'Online continuous teacher: topk={continuous_topk}, weight={continuous_weight}; '
+              'only teacher-correct student-error tokens contribute.', flush=True)
     distill_topk = int(distill_cfg.get('topk', 4)) if distill_cfg else 4
     student_errors_only = bool(distill_cfg and distill_cfg.get('student_errors_only', False))
     if not math.isfinite(distill_weight) or distill_weight < 0:
@@ -272,7 +282,8 @@ def main():
     running = {"loss": 0.0, "recon_ce": 0.0, "weighted_recon_ce": 0.0, "vq": 0.0,
                **({'distill_ce': 0.0, 'distill_eligible_fraction': 0.0} if (teachers or cached_teacher) and student_errors_only else
                   {'distill_ce': 0.0, 'teacher_correct_fraction': 0.0} if teachers or cached_teacher else {}),
-               **({'teacher_error_fraction': 0.0} if error_teacher is not None else {})}
+               **({'teacher_error_fraction': 0.0} if error_teacher is not None else {}),
+               **({'continuous_distill_ce': 0.0, 'continuous_eligible_fraction': 0.0} if continuous_weight else {})}
     micro = 0
     since_log = 0
     last_log_time = time.perf_counter()
@@ -366,7 +377,8 @@ def main():
                             values, indices = teacher_logits.topk(distill_topk, dim=-1)
                             teacher_topk.append((indices, torch.softmax(values.float(), dim=-1)))
                             del teacher_logits, values
-                logits, vq_loss, per_level_util, global_util, _ = model(x)
+                model_result = model(x, continuous_teacher_topk=continuous_topk if continuous_weight else 0)
+                logits, vq_loss, per_level_util, global_util, _ = model_result[:5]
                 occurrence_weights = (
                     batch["token_weights"].to(device, non_blocking=True).float()
                     if occurrence_weighting else None
@@ -392,6 +404,10 @@ def main():
                     hard_fraction=hard_fraction, hard_mix=hard_mix, focal_gamma=focal_gamma,
                 )
                 loss = train_ce + vq_weight * vq_loss.float()
+                if continuous_weight:
+                    continuous_ce, continuous_count = topk_teacher_distillation_loss(
+                        logits, x, valid, [model_result[5]], student_errors_only=True)
+                    loss = loss + continuous_weight * continuous_ce
                 if teacher_topk:
                     distill_ce, teacher_count = topk_teacher_distillation_loss(
                         logits, x, valid, teacher_topk, student_errors_only=student_errors_only)
@@ -409,6 +425,9 @@ def main():
                 running['distill_ce'] += float(distill_ce.detach()) * n_examples
                 metric = 'distill_eligible_fraction' if student_errors_only else 'teacher_correct_fraction'
                 running[metric] += float(teacher_fraction.detach()) * n_examples
+            if continuous_weight:
+                running['continuous_distill_ce'] += float(continuous_ce.detach()) * n_examples
+                running['continuous_eligible_fraction'] += float((continuous_count / valid.sum().clamp_min(1)).detach()) * n_examples
             if teacher_errors is not None:
                 fraction = ((teacher_errors != x) & valid).sum() / valid.sum().clamp_min(1)
                 running['teacher_error_fraction'] += float(fraction.detach()) * n_examples

@@ -94,11 +94,20 @@ class VQVAE(nn.Module):
             z = self.pre_quant_drop(z)
         return z
 
-    def forward(self, x):
+    def forward(self, x, continuous_teacher_topk=0):
         z = self._encode_pre_quant(x)
         z_q, vq_loss, per_level_codebook_util, global_codebook_util, ppl = self.vq(z)
+        if continuous_teacher_topk and self.autoregressive_decoder:
+            raise ValueError('Continuous teacher requires a parallel decoder')
         x = self.decoder(z_q, targets=x) if self.autoregressive_decoder else self.decoder(z_q)
-        return x, vq_loss, per_level_codebook_util, global_codebook_util, ppl
+        result = (x, vq_loss, per_level_codebook_util, global_codebook_util, ppl)
+        if continuous_teacher_topk:
+            with torch.no_grad():
+                teacher = self.decoder(z.detach())
+                values, indices = teacher.topk(continuous_teacher_topk, dim=-1)
+                probabilities = torch.softmax(values.float(), dim=-1)
+            return (*result, (indices, probabilities))
+        return result
 
     @torch.no_grad()
     def encode(self, x):
