@@ -62,6 +62,15 @@ def teacher_error_factors(predicted, targets, valid, multiplier):
     return torch.where((predicted != targets) & valid.bool(), multiplier, 1.0)
 
 
+def normalize_continuous_teacher_loss(eligible_mean, eligible_count, valid_count, mode):
+    """Optionally spread the selected-token loss over all valid tokens."""
+    if mode == 'eligible':
+        return eligible_mean
+    if mode == 'valid':
+        return eligible_mean * eligible_count / valid_count.clamp_min(1)
+    raise ValueError('continuous_distillation normalization must be eligible or valid')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True)
@@ -212,13 +221,16 @@ def main():
     continuous_cfg = cfg.train.get('continuous_distillation', {})
     continuous_weight = float(continuous_cfg.get('weight', 0.0))
     continuous_topk = int(continuous_cfg.get('topk', 4))
+    continuous_normalization = str(continuous_cfg.get('normalization', 'eligible'))
+    if continuous_normalization not in ('eligible', 'valid'):
+        raise ValueError('continuous_distillation normalization must be eligible or valid')
     if not math.isfinite(continuous_weight) or continuous_weight < 0:
         raise ValueError('continuous_distillation weight must be finite and nonnegative')
     if continuous_weight and (continuous_topk < 1 or continuous_topk > int(cfg.vqvae.in_vocab_size) or model.autoregressive_decoder):
         raise ValueError('continuous_distillation requires valid topk and a parallel decoder')
     if continuous_weight:
         print(f'Online continuous teacher: topk={continuous_topk}, weight={continuous_weight}; '
-              'only teacher-correct student-error tokens contribute.', flush=True)
+              f'normalization={continuous_normalization}; only teacher-correct student-error tokens contribute.', flush=True)
     distill_topk = int(distill_cfg.get('topk', 4)) if distill_cfg else 4
     student_errors_only = bool(distill_cfg and distill_cfg.get('student_errors_only', False))
     if not math.isfinite(distill_weight) or distill_weight < 0:
@@ -283,7 +295,8 @@ def main():
                **({'distill_ce': 0.0, 'distill_eligible_fraction': 0.0} if (teachers or cached_teacher) and student_errors_only else
                   {'distill_ce': 0.0, 'teacher_correct_fraction': 0.0} if teachers or cached_teacher else {}),
                **({'teacher_error_fraction': 0.0} if error_teacher is not None else {}),
-               **({'continuous_distill_ce': 0.0, 'continuous_eligible_fraction': 0.0} if continuous_weight else {})}
+               **({'continuous_distill_ce': 0.0, 'continuous_eligible_fraction': 0.0,
+                    'continuous_applied_loss': 0.0} if continuous_weight else {})}
     micro = 0
     since_log = 0
     last_log_time = time.perf_counter()
@@ -407,7 +420,9 @@ def main():
                 if continuous_weight:
                     continuous_ce, continuous_count = topk_teacher_distillation_loss(
                         logits, x, valid, [model_result[5]], student_errors_only=True)
-                    loss = loss + continuous_weight * continuous_ce
+                    continuous_applied = continuous_weight * normalize_continuous_teacher_loss(
+                        continuous_ce, continuous_count, valid.sum(), continuous_normalization)
+                    loss = loss + continuous_applied
                 if teacher_topk:
                     distill_ce, teacher_count = topk_teacher_distillation_loss(
                         logits, x, valid, teacher_topk, student_errors_only=student_errors_only)
@@ -428,6 +443,7 @@ def main():
             if continuous_weight:
                 running['continuous_distill_ce'] += float(continuous_ce.detach()) * n_examples
                 running['continuous_eligible_fraction'] += float((continuous_count / valid.sum().clamp_min(1)).detach()) * n_examples
+                running['continuous_applied_loss'] += float(continuous_applied.detach()) * n_examples
             if teacher_errors is not None:
                 fraction = ((teacher_errors != x) & valid).sum() / valid.sum().clamp_min(1)
                 running['teacher_error_fraction'] += float(fraction.detach()) * n_examples

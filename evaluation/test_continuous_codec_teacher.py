@@ -6,6 +6,7 @@ import torch
 from omegaconf import OmegaConf
 from models.vqvae import VQVAE
 from training.reconstruction_loss import topk_teacher_distillation_loss
+from training.train_tokenizer import normalize_continuous_teacher_loss
 
 cfg = OmegaConf.create({'in_vocab_size': 32, 'context_length': 16, 'embed_dim': 8,
  'vqvae_vocab_size': [16, 16], 'n_layers': 2, 'compression_factor': 1, 'dropout': 0.0,
@@ -31,4 +32,11 @@ assert int(count) == int((result[0].argmax(-1) != targets).sum())
 loss.backward()
 assert model.encoder.wte.weight.grad is not None
 assert torch.isfinite(model.encoder.wte.weight.grad).all()
+mean = torch.tensor(2.0, requires_grad=True)
+assert normalize_continuous_teacher_loss(mean, torch.tensor(2), torch.tensor(10), 'eligible').item() == 2.0
+scaled = normalize_continuous_teacher_loss(mean, torch.tensor(2), torch.tensor(10), 'valid')
+assert torch.isclose(scaled, torch.tensor(0.4))
+scaled.backward()
+assert torch.isclose(mean.grad, torch.tensor(0.2))
+assert normalize_continuous_teacher_loss(mean, torch.tensor(0), torch.tensor(0), 'valid').item() == 0
 print('Continuous codec teacher checks passed.')
