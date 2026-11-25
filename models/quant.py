@@ -7,6 +7,16 @@ from torch.nn import functional as F
 from utils.registry import level_schedulers
 
 
+def weighted_level_loss(losses, final_weight=1.0):
+    """Average level losses with optional extra emphasis on the final level."""
+    if not losses or not math.isfinite(final_weight) or final_weight <= 0:
+        raise ValueError('Expected level losses and a positive finite final weight')
+    stacked = torch.stack(losses)
+    if final_weight == 1.0:
+        return stacked.mean()
+    return (stacked.sum() + (final_weight - 1.0) * stacked[-1]) / (len(losses) - 1 + final_weight)
+
+
 # Phi (quant_resi): per-level residual conv after upsample, blending (1-r)*h + r*Conv1d(h).
 class Phi(nn.Conv1d):
     def __init__(self, embed_dim, quant_resi, learnable_ratio=False):
@@ -247,11 +257,15 @@ class MultiscaleResidualVectorQuantizer(VectorQuantizerBaseClass):
         kmeans_iters=10,
         pre_quant_norm_type='group',
         distance_fp32=False,
+        final_level_loss_weight=1.0,
         aux=None,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.distance_fp32 = bool(distance_fp32)
+        self.final_level_loss_weight = float(final_level_loss_weight)
+        if not math.isfinite(self.final_level_loss_weight) or self.final_level_loss_weight <= 0:
+            raise ValueError('final_level_loss_weight must be positive and finite')
         self.commitment_cost = commitment_cost
         self.epsilon = epsilon
         self.ema_scale_by_world_size = bool(ema_scale_by_world_size)
@@ -544,9 +558,9 @@ class MultiscaleResidualVectorQuantizer(VectorQuantizerBaseClass):
                 z_hat = z_hat_keep[K]
                 vq_loss = vq_loss_per_level[K]
             else:
-                vq_loss = torch.stack(vq_loss_per_level).mean()
+                vq_loss = weighted_level_loss(vq_loss_per_level, self.final_level_loss_weight)
         else:
-            vq_loss = torch.stack(vq_loss_per_level).mean()
+            vq_loss = weighted_level_loss(vq_loss_per_level, self.final_level_loss_weight)
         z_hat = z + (z_hat - z).detach()
 
         # Transfer all counters together: per-level .item() forced a GPU/CPU
