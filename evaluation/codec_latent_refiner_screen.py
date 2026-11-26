@@ -1,6 +1,7 @@
 """Train or evaluate a small frozen-codec latent adapter on known inputs."""
 import argparse
 import json
+import statistics
 import time
 from pathlib import Path
 import torch
@@ -12,6 +13,26 @@ from training.data import encode_text, fixed_sequence, load_base_tokenizer, sha2
 from training.engine import make_loader, seed_all
 from evaluation.ensemble_codec_methods import load_rows
 from evaluation.godot_csharp_codec_eval import visible_text
+
+
+@torch.no_grad()
+def benchmark_decode(model, adapter, q, device, warmup=3, repeats=10):
+    """Measure the frozen decoder on fixed latents, with and without adapter."""
+    def sync():
+        if device.type == 'cuda': torch.cuda.synchronize(device)
+    for _ in range(warmup):
+        model.decoder(q); model.decoder(adapter(q))
+    sync()
+    samples = {'baseline': [], 'adapter': []}
+    for i in range(repeats):
+        for name in (('baseline', 'adapter') if i % 2 == 0 else ('adapter', 'baseline')):
+            sync(); start = time.perf_counter()
+            model.decoder(q if name == 'baseline' else adapter(q))
+            sync(); samples[name].append(time.perf_counter() - start)
+    return {'batch_size': int(q.shape[0]), 'repeats': repeats,
+            'baseline_median_seconds': statistics.median(samples['baseline']),
+            'adapter_median_seconds': statistics.median(samples['adapter']),
+            'scope': 'Fixed latent batch, frozen decoder forward, GPU-synchronized when applicable; excludes encoding, unpacking, argmax, text decoding, compilation and model loading.'}
 
 
 def load_codec(config, checkpoint, device):
@@ -101,7 +122,7 @@ def evaluate(args, cfg, model, device):
         raise SystemExit('Baseline input, IDs or checkpoint differ')
     tok = load_base_tokenizer(cfg.tokenizer); pad, eos = int(tok.pad_token_id), int(tok.eos_token_id)
     context = int(cfg.model.context_length); rows = list(source.values()); output = []
-    correct = {'baseline': 0, 'adapter': 0}; total = 0
+    correct = {'baseline': 0, 'adapter': 0}; total = 0; timing = None
     with torch.no_grad():
         for start in range(0, len(rows), args.batch_size):
             group = rows[start:start+args.batch_size]; packed = []
@@ -113,6 +134,8 @@ def evaluate(args, cfg, model, device):
             x = torch.tensor([p[0] for p in packed], device=device, dtype=torch.long)
             mask = torch.tensor([p[1] for p in packed], device=device, dtype=torch.bool)
             q = model.vq.idx_to_z_q(model.encode(x))
+            if args.benchmark and timing is None:
+                timing = benchmark_decode(model, adapter, q, device)
             predictions = {'baseline': model.decoder(q).argmax(-1), 'adapter': model.decoder(adapter(q)).argmax(-1)}
             total += int(mask.sum())
             for name, pred in predictions.items(): correct[name] += int(((pred == x) & mask).sum())
@@ -132,6 +155,7 @@ def evaluate(args, cfg, model, device):
               'adapter_sha256': sha256_file(args.adapter), 'adapter_step': state['step'],
               'scope': 'Known-input codec reconstruction. The adapter consumes only decoded VQ latents; continuous encoder vectors are training targets only.',
               'limitations': 'Frozen codec, reused development datasets; no compilation, behavior or generator test. Adapter adds parameters and decode compute; index count unchanged. Validation selected the adapter checkpoint.'}
+    if timing is not None: report['decode_benchmark'] = timing
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open('x', encoding='utf-8') as f:
         for row in output: f.write(json.dumps(row, ensure_ascii=False)+'\n')
@@ -147,6 +171,7 @@ def main():
     p.add_argument('--steps', type=int, default=1000); p.add_argument('--validate-every', type=int, default=250)
     p.add_argument('--batch-size', type=int, default=8); p.add_argument('--lr', type=float, default=0.0003)
     p.add_argument('--latent-weight', type=float, default=0.1); p.add_argument('--device', default='cuda')
+    p.add_argument('--benchmark', action='store_true', help='Benchmark decoder forward on the first evaluation batch')
     args = p.parse_args()
     if min(args.steps, args.validate_every, args.batch_size) < 1 or args.lr <= 0 or args.latent_weight < 0: p.error('Invalid training arguments')
     if args.mode == 'evaluate' and not all((args.adapter, args.input, args.baseline)): p.error('Evaluation needs adapter, input and baseline')
