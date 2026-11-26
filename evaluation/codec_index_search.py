@@ -48,15 +48,21 @@ def score(logits, x, mask):
     return errors, (ce * valid).sum(-1) / valid.sum(-1).clamp_min(1)
 
 
+def is_improvement(new_errors, new_ce, old_errors, old_ce):
+    """Prefer fewer token errors, breaking ties using cross-entropy."""
+    return (int(new_errors), float(new_ce)) < (int(old_errors), float(old_ce))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('config', 'checkpoint', 'input', 'baseline', 'output'):
         p.add_argument('--'+name, required=True)
     p.add_argument('--max-examples', type=int, default=64)
     p.add_argument('--budget', type=int, default=4)
+    p.add_argument('--rounds', type=int, default=1)
     p.add_argument('--device', default='cuda')
     args = p.parse_args()
-    if args.max_examples < 1 or args.budget < 1: p.error('Example and proposal budgets must be positive')
+    if args.max_examples < 1 or args.budget < 1 or args.rounds < 1: p.error('Example, proposal and round budgets must be positive')
     out = Path(args.output)
     if out.exists() or out.with_suffix('.report.json').exists(): raise SystemExit('Output exists')
     cfg = OmegaConf.load(args.config); OmegaConf.resolve(cfg)
@@ -74,7 +80,7 @@ def main():
     model = VQVAE(**OmegaConf.create(vcfg))
     model.load_state_dict(torch.load(args.checkpoint, map_location='cpu', weights_only=False)['model'], strict=True)
     model.to(device).eval().requires_grad_(False)
-    rows, output, attempts = list(original.values())[:args.max_examples], [], 0
+    rows, output, attempts, accepted_total = list(original.values())[:args.max_examples], [], 0, 0
     start_time = time.perf_counter()
     for i, row in enumerate(rows, 1):
         key, target = row['id'], row['target']
@@ -93,24 +99,28 @@ def main():
         selected_codes = codes
         selected = before
         old_errors = int(errors[0]); new_errors = old_errors
-        if before != target and old_errors:
-            proposals = propose(model, codes, x, mask, args.budget)
+        current_ce = float(ce[0]); accepted = 0
+        for _ in range(args.rounds):
+            if selected == target or new_errors == 0: break
+            proposals = propose(model, selected_codes, x, mask, args.budget)
             attempts += len(proposals)
-            if proposals:
-                with torch.no_grad():
-                    trial_codes = torch.cat(proposals, dim=0)
-                    trial_logits = model.decode(trial_codes)
-                    trial_errors, trial_ce = score(trial_logits, x, mask)
-                    order = sorted(range(len(proposals)), key=lambda j: (int(trial_errors[j]), float(trial_ce[j])))
-                    best = order[0]
-                    if (int(trial_errors[best]), float(trial_ce[best])) < (old_errors, float(ce[0])):
-                        selected_codes = trial_codes[best:best+1]
-                        selected = visible_text(tok, trial_logits[best].argmax(-1).tolist(), eos, pad)
-                        new_errors = int(trial_errors[best])
+            if not proposals: break
+            with torch.no_grad():
+                trial_codes = torch.cat(proposals, dim=0)
+                trial_logits = model.decode(trial_codes)
+                trial_errors, trial_ce = score(trial_logits, x, mask)
+                order = sorted(range(len(proposals)), key=lambda j: (int(trial_errors[j]), float(trial_ce[j])))
+                best = order[0]
+                if not is_improvement(trial_errors[best], trial_ce[best], new_errors, current_ce): break
+                selected_codes = trial_codes[best:best+1]
+                selected = visible_text(tok, trial_logits[best].argmax(-1).tolist(), eos, pad)
+                new_errors, current_ce = int(trial_errors[best]), float(trial_ce[best])
+                accepted += 1
+        accepted_total += accepted
         # This representation is the complete discrete code stream, requiring no target at decode.
         output.append({'id': key, 'baseline_exact': before == target, 'selected_exact': selected == target,
                        'baseline_token_errors': old_errors, 'selected_token_errors': new_errors,
-                       'selected': selected, 'codes': selected_codes[0].tolist()})
+                       'selected': selected, 'accepted_changes': accepted, 'codes': selected_codes[0].tolist()})
         if i % 16 == 0 or i == len(rows): print(f'Processed {i}/{len(rows)}; proposals evaluated={attempts}', flush=True)
     summary = {'examples': len(output), 'baseline_exact': sum(r['baseline_exact'] for r in output),
                'selected_exact': sum(r['selected_exact'] for r in output),
@@ -118,7 +128,8 @@ def main():
                'lost_exact': sum(r['baseline_exact'] and not r['selected_exact'] for r in output),
                'baseline_token_errors': sum(r['baseline_token_errors'] for r in output),
                'selected_token_errors': sum(r['selected_token_errors'] for r in output),
-               'attempts': attempts, 'budget_per_example': args.budget, 'seconds': time.perf_counter()-start_time,
+               'attempts': attempts, 'budget_per_round': args.budget, 'max_rounds': args.rounds,
+               'accepted_changes': accepted_total, 'seconds': time.perf_counter()-start_time,
                'input_sha256': sha256_file(args.input), 'checkpoint_sha256': sha256_file(args.checkpoint),
                'scope': 'Encoder-side discrete VQ index search uses the known original and decoder predictions to choose codes. Decoder needs only selected VQ indices.',
                'limitations': 'Fixed first-N sample from repeatedly used data; no generation, compilation, behavior, packing, or full production timing. Requires additional encoder-side decoder and gradient work; does not reduce index count. The known input is necessary for selection; not applicable to unknown generated targets.'}
