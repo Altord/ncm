@@ -49,4 +49,13 @@ with tempfile.TemporaryDirectory() as directory:
     report = json.loads((root/'result.report.json').read_text())
     assert report['examples'] == 1 and report['adapter_step'] == 1
     assert report['baseline_exact'] == report['adapter_exact'] == 1
+    sys.argv = ['test','--mode','train',*common,'--output',str(root/'attention.pt'),'--steps','1',
+                '--validate-every','1','--architecture','attention','--heads','2']
+    with contextlib.redirect_stdout(io.StringIO()): screen.main()
+    assert torch.load(root/'attention.pt', weights_only=False)['architecture'] == 'attention'
+    sys.argv = ['test','--mode','evaluate',*common,'--adapter',str(root/'attention.pt'),'--input',str(source),
+                '--baseline',str(root/'baseline.jsonl'),'--output',str(root/'attention-result.jsonl')]
+    with contextlib.redirect_stdout(io.StringIO()): screen.main()
+    report = json.loads((root/'attention-result.report.json').read_text())
+    assert report['examples'] == report['adapter_exact'] == 1
 print('Latent refiner training and evaluation integration checks passed.')

@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import torch
-from models.latent_refiner import LatentRefiner
+from models.latent_refiner import make_latent_refiner
 from training.data import encode_text, fixed_sequence, load_base_tokenizer, sha256_file
 from evaluation.codec_latent_refiner_screen import load_codec
 from evaluation.ensemble_codec_methods import load_rows
@@ -98,7 +98,7 @@ def main():
     state = torch.load(args.adapter, map_location='cpu', weights_only=False)
     if state['codec_sha256'] != sha256_file(args.checkpoint) or state['config_sha256'] != sha256_file(args.config):
         raise SystemExit('Adapter codec or config differs')
-    adapter = LatentRefiner(state['width'], state['hidden']).to(device)
+    adapter = make_latent_refiner(state['width'], state['hidden'], state.get('architecture', 'mlp'), state.get('heads', 4)).to(device)
     adapter.load_state_dict(state['adapter'], strict=True); adapter.eval()
     tok = load_base_tokenizer(cfg.tokenizer)
     methods, method_report = infer(model, adapter, cfg, tok, args.methods_input, args.methods_baseline, args.methods_adapter, device, args.batch_size)

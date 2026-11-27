@@ -4,7 +4,7 @@ import json
 import math
 from pathlib import Path
 import torch
-from models.latent_refiner import LatentRefiner
+from models.latent_refiner import make_latent_refiner
 from training.data import load_base_tokenizer, sha256_file
 from evaluation.codec_latent_refiner_screen import load_codec
 from evaluation.codec_latent_refiner_gate import infer, select, summarize
@@ -41,7 +41,7 @@ def main():
     device = torch.device(args.device)
     if device.type == 'cuda' and not torch.cuda.is_available(): raise SystemExit('GPU unavailable')
     cfg, model = load_codec(args.config, args.checkpoint, device)
-    adapter = LatentRefiner(state['width'], state['hidden']).to(device)
+    adapter = make_latent_refiner(state['width'], state['hidden'], state.get('architecture', 'mlp'), state.get('heads', 4)).to(device)
     adapter.load_state_dict(state['adapter'], strict=True); adapter.eval()
     tok = load_base_tokenizer(cfg.tokenizer)
     rows, report = infer(model, adapter, cfg, tok, args.input, args.baseline, args.adapter_output, device, args.batch_size)

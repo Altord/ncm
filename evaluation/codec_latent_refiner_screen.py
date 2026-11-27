@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 from models.vqvae import VQVAE
-from models.latent_refiner import LatentRefiner
+from models.latent_refiner import make_latent_refiner
 from training.data import encode_text, fixed_sequence, load_base_tokenizer, sha256_file
 from training.engine import make_loader, seed_all
 from evaluation.ensemble_codec_methods import load_rows
@@ -66,7 +66,7 @@ def train(args, cfg, model, device):
     seed_all(int(cfg.train.seed))
     loader = make_loader(cfg.data.cache_dir, args.batch_size, 0, True, int(cfg.train.seed))
     val = make_loader(cfg.train.validation_cache_dir, args.batch_size, 0, False, int(cfg.train.seed))
-    width = int(cfg.vqvae.embed_dim); adapter = LatentRefiner(width, width * 2).to(device)
+    width = int(cfg.vqvae.embed_dim); adapter = make_latent_refiner(width, width * 2, args.architecture, args.heads).to(device)
     optimizer = torch.optim.AdamW(adapter.parameters(), lr=args.lr)
     best = -1.0; best_step = None; start = time.perf_counter(); it = iter(loader)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -100,6 +100,7 @@ def train(args, cfg, model, device):
             if metrics['token_accuracy'] > best:
                 best, best_step = metrics['token_accuracy'], step
                 torch.save({'adapter': adapter.state_dict(), 'width': width, 'hidden': width*2, 'step': step,
+                            'architecture': args.architecture, 'heads': args.heads,
                             'codec_sha256': sha256_file(args.checkpoint), 'config_sha256': sha256_file(args.config),
                             'training_cache_sha256': sha256_file(Path(cfg.data.cache_dir)/'manifest.json'),
                             'validation_cache_sha256': sha256_file(Path(cfg.train.validation_cache_dir)/'manifest.json'),
@@ -114,7 +115,7 @@ def evaluate(args, cfg, model, device):
     state = torch.load(args.adapter, map_location='cpu', weights_only=False)
     if state['codec_sha256'] != sha256_file(args.checkpoint) or state['config_sha256'] != sha256_file(args.config):
         raise SystemExit('Adapter codec checkpoint or config differs')
-    adapter = LatentRefiner(state['width'], state['hidden']).to(device)
+    adapter = make_latent_refiner(state['width'], state['hidden'], state.get('architecture', 'mlp'), state.get('heads', 4)).to(device)
     adapter.load_state_dict(state['adapter'], strict=True); adapter.eval()
     source, baseline = load_rows(args.input), load_rows(args.baseline)
     meta = json.loads(Path(args.baseline).with_suffix('.report.json').read_text(encoding='utf-8'))
@@ -171,9 +172,10 @@ def main():
     p.add_argument('--steps', type=int, default=1000); p.add_argument('--validate-every', type=int, default=250)
     p.add_argument('--batch-size', type=int, default=8); p.add_argument('--lr', type=float, default=0.0003)
     p.add_argument('--latent-weight', type=float, default=0.1); p.add_argument('--device', default='cuda')
+    p.add_argument('--architecture', choices=('mlp', 'attention'), default='mlp'); p.add_argument('--heads', type=int, default=4)
     p.add_argument('--benchmark', action='store_true', help='Benchmark decoder forward on the first evaluation batch')
     args = p.parse_args()
-    if min(args.steps, args.validate_every, args.batch_size) < 1 or args.lr <= 0 or args.latent_weight < 0: p.error('Invalid training arguments')
+    if min(args.steps, args.validate_every, args.batch_size, args.heads) < 1 or args.lr <= 0 or args.latent_weight < 0: p.error('Invalid training arguments')
     if args.mode == 'evaluate' and not all((args.adapter, args.input, args.baseline)): p.error('Evaluation needs adapter, input and baseline')
     device = torch.device(args.device)
     if device.type == 'cuda' and not torch.cuda.is_available(): raise SystemExit('GPU unavailable')

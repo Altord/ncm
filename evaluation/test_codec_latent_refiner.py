@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
 from omegaconf import OmegaConf
 from models.vqvae import VQVAE
-from models.latent_refiner import LatentRefiner
+from models.latent_refiner import LatentRefiner, make_latent_refiner
 from evaluation.codec_latent_refiner_screen import benchmark_decode
 
 cfg = OmegaConf.create({'in_vocab_size': 32, 'context_length': 16, 'embed_dim': 8,
@@ -22,6 +22,11 @@ assert torch.equal(model.decoder(adapter(q)), model.decoder(q))
 model.decoder(adapter(q)).square().mean().backward()
 assert adapter.net[-1].weight.grad is not None and torch.isfinite(adapter.net[-1].weight.grad).all()
 assert all(p.grad is None for p in model.parameters())
+contextual = make_latent_refiner(8, 16, 'attention', 2)
+assert torch.equal(contextual(q), q)
+model.decoder(contextual(q)).square().mean().backward()
+assert contextual.attention.out_proj.weight.grad is not None
+assert torch.isfinite(contextual.attention.out_proj.weight.grad).all()
 timing = benchmark_decode(model, adapter, q, torch.device('cpu'), warmup=1, repeats=2)
 assert timing['batch_size'] == 2 and timing['baseline_median_seconds'] > 0 and timing['adapter_median_seconds'] > 0
 print('Latent refiner identity and gradient checks passed.')
