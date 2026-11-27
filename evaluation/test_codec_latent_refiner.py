@@ -6,7 +6,7 @@ import torch
 from omegaconf import OmegaConf
 from models.vqvae import VQVAE
 from models.latent_refiner import LatentRefiner, make_latent_refiner
-from evaluation.codec_latent_refiner_screen import benchmark_decode
+from evaluation.codec_latent_refiner_screen import adapter_training_loss, benchmark_decode
 
 cfg = OmegaConf.create({'in_vocab_size': 32, 'context_length': 16, 'embed_dim': 8,
  'vqvae_vocab_size': [16, 16], 'n_layers': 2, 'compression_factor': 1, 'dropout': 0.0,
@@ -22,6 +22,10 @@ assert torch.equal(model.decoder(adapter(q)), model.decoder(q))
 model.decoder(adapter(q)).square().mean().backward()
 assert adapter.net[-1].weight.grad is not None and torch.isfinite(adapter.net[-1].weight.grad).all()
 assert all(p.grad is None for p in model.parameters())
+class NoDecoder:
+    def decoder(self, _): raise AssertionError('Latent-only training must skip decoder')
+loss, ce, mse = adapter_training_loss(NoDecoder(), adapter, q, q + 1, x, torch.ones_like(x), 0, 1)
+assert ce is None and torch.isfinite(loss) and torch.isfinite(mse)
 contextual = make_latent_refiner(8, 16, 'attention', 2)
 assert torch.equal(contextual(q), q)
 model.decoder(contextual(q)).square().mean().backward()

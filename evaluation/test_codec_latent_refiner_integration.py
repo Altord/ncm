@@ -58,4 +58,8 @@ with tempfile.TemporaryDirectory() as directory:
     with contextlib.redirect_stdout(io.StringIO()): screen.main()
     report = json.loads((root/'attention-result.report.json').read_text())
     assert report['examples'] == report['adapter_exact'] == 1
+    sys.argv = ['test','--mode','train',*common,'--output',str(root/'latent.pt'),'--steps','1',
+                '--validate-every','1','--ce-weight','0','--latent-weight','1']
+    with contextlib.redirect_stdout(io.StringIO()): screen.main()
+    assert torch.load(root/'latent.pt', weights_only=False)['ce_weight'] == 0
 print('Latent refiner training and evaluation integration checks passed.')

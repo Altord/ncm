@@ -58,6 +58,19 @@ def valid_metrics(model, adapter, loader, device):
     return {'token_accuracy': correct / valid, 'exact': exact, 'examples': examples}
 
 
+def adapter_training_loss(model, adapter, q, z, x, mask, ce_weight, latent_weight):
+    refined = adapter(q)
+    mse = F.mse_loss(refined.float(), z.float())
+    ce = None
+    loss = latent_weight * mse
+    if ce_weight:
+        logits = model.decoder(refined)
+        ce = F.cross_entropy(logits.float().transpose(1, 2), x, reduction='none')
+        ce = (ce * mask).sum() / mask.sum().clamp_min(1)
+        loss = loss + ce_weight * ce
+    return loss, ce, mse
+
+
 def train(args, cfg, model, device):
     out = Path(args.output)
     if out.exists(): raise SystemExit(f'Output exists: {out}')
@@ -80,22 +93,17 @@ def train(args, cfg, model, device):
             z = model.encode_z(x)
             q = model.vq.idx_to_z_q(model.vq.z_to_idx(z))
         # Only adapter parameters receive gradients; the original codec remains frozen.
-        refined = adapter(q)
-        logits = model.decoder(refined)
-        ce = F.cross_entropy(logits.float().transpose(1, 2), x, reduction='none')
-        ce = (ce * mask).sum() / mask.sum()
-        mse = F.mse_loss(refined.float(), z.float())
-        loss = ce + args.latent_weight * mse
+        loss, ce, mse = adapter_training_loss(model, adapter, q, z, x, mask, args.ce_weight, args.latent_weight)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(adapter.parameters(), 1.0)
         optimizer.step()
         if step % 100 == 0 and step % args.validate_every != 0:
             elapsed = time.perf_counter() - start
-            print(json.dumps({'step': step, 'train_ce': float(ce.detach()), 'latent_mse': float(mse.detach()),
+            print(json.dumps({'step': step, 'train_ce': float(ce.detach()) if ce is not None else None, 'latent_mse': float(mse.detach()),
                               'examples_per_second_since_start': step * args.batch_size / max(elapsed, 1e-9)}), flush=True)
         if step % args.validate_every == 0 or step == args.steps:
             metrics = valid_metrics(model, adapter, val, device)
-            print(json.dumps({'step': step, 'train_ce': float(ce.detach()), 'latent_mse': float(mse.detach()),
+            print(json.dumps({'step': step, 'train_ce': float(ce.detach()) if ce is not None else None, 'latent_mse': float(mse.detach()),
                               'validation': metrics, 'seconds': time.perf_counter()-start}), flush=True)
             if metrics['token_accuracy'] > best:
                 best, best_step = metrics['token_accuracy'], step
@@ -104,7 +112,7 @@ def train(args, cfg, model, device):
                             'codec_sha256': sha256_file(args.checkpoint), 'config_sha256': sha256_file(args.config),
                             'training_cache_sha256': sha256_file(Path(cfg.data.cache_dir)/'manifest.json'),
                             'validation_cache_sha256': sha256_file(Path(cfg.train.validation_cache_dir)/'manifest.json'),
-                            'latent_weight': args.latent_weight, 'validation': metrics}, out)
+                            'latent_weight': args.latent_weight, 'ce_weight': args.ce_weight, 'validation': metrics}, out)
             adapter.train()
     print(f'Selected validation-best adapter: step={best_step}; accuracy={best:.2%}; file={out}', flush=True)
 
@@ -172,10 +180,13 @@ def main():
     p.add_argument('--steps', type=int, default=1000); p.add_argument('--validate-every', type=int, default=250)
     p.add_argument('--batch-size', type=int, default=8); p.add_argument('--lr', type=float, default=0.0003)
     p.add_argument('--latent-weight', type=float, default=0.1); p.add_argument('--device', default='cuda')
+    p.add_argument('--ce-weight', type=float, default=1.0)
     p.add_argument('--architecture', choices=('mlp', 'attention'), default='mlp'); p.add_argument('--heads', type=int, default=4)
     p.add_argument('--benchmark', action='store_true', help='Benchmark decoder forward on the first evaluation batch')
     args = p.parse_args()
-    if min(args.steps, args.validate_every, args.batch_size, args.heads) < 1 or args.lr <= 0 or args.latent_weight < 0: p.error('Invalid training arguments')
+    if (min(args.steps, args.validate_every, args.batch_size, args.heads) < 1 or args.lr <= 0 or
+        args.latent_weight < 0 or args.ce_weight < 0 or not (args.latent_weight or args.ce_weight)):
+        p.error('Invalid training arguments')
     if args.mode == 'evaluate' and not all((args.adapter, args.input, args.baseline)): p.error('Evaluation needs adapter, input and baseline')
     device = torch.device(args.device)
     if device.type == 'cuda' and not torch.cuda.is_available(): raise SystemExit('GPU unavailable')
