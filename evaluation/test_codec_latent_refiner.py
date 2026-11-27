@@ -6,7 +6,7 @@ import torch
 from omegaconf import OmegaConf
 from models.vqvae import VQVAE
 from models.latent_refiner import LatentRefiner, make_latent_refiner
-from evaluation.codec_latent_refiner_screen import adapter_training_loss, benchmark_decode
+from evaluation.codec_latent_refiner_screen import adapter_training_loss, benchmark_decode, latent_valid_mask
 
 cfg = OmegaConf.create({'in_vocab_size': 32, 'context_length': 16, 'embed_dim': 8,
  'vqvae_vocab_size': [16, 16], 'n_layers': 2, 'compression_factor': 1, 'dropout': 0.0,
@@ -26,6 +26,18 @@ class NoDecoder:
     def decoder(self, _): raise AssertionError('Latent-only training must skip decoder')
 loss, ce, mse = adapter_training_loss(NoDecoder(), adapter, q, q + 1, x, torch.ones_like(x), 0, 1)
 assert ce is None and torch.isfinite(loss) and torch.isfinite(mse)
+mask = torch.tensor([[1, 1, 1, 0, 0, 0]], dtype=torch.bool)
+assert latent_valid_mask(mask, 3).tolist() == [[True, True, False]]
+identity = torch.nn.Identity()
+small_q = torch.zeros(1, 3, 1)
+small_z = torch.tensor([[[1.0], [1.0], [10.0]]])
+_, _, valid_mse = adapter_training_loss(NoDecoder(), identity, small_q, small_z, x, mask, 0, 1, 'valid')
+assert valid_mse.item() == 1.0
+try:
+    latent_valid_mask(mask, 4)
+    raise AssertionError('Incompatible latent length accepted')
+except ValueError:
+    pass
 contextual = make_latent_refiner(8, 16, 'attention', 2)
 assert torch.equal(contextual(q), q)
 model.decoder(contextual(q)).square().mean().backward()

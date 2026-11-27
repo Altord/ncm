@@ -62,4 +62,8 @@ with tempfile.TemporaryDirectory() as directory:
                 '--validate-every','1','--ce-weight','0','--latent-weight','1']
     with contextlib.redirect_stdout(io.StringIO()): screen.main()
     assert torch.load(root/'latent.pt', weights_only=False)['ce_weight'] == 0
+    sys.argv = ['test','--mode','train',*common,'--output',str(root/'masked.pt'),'--steps','1',
+                '--validate-every','1','--latent-mask','valid']
+    with contextlib.redirect_stdout(io.StringIO()): screen.main()
+    assert torch.load(root/'masked.pt', weights_only=False)['latent_mask'] == 'valid'
 print('Latent refiner training and evaluation integration checks passed.')

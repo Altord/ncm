@@ -58,9 +58,23 @@ def valid_metrics(model, adapter, loader, device):
     return {'token_accuracy': correct / valid, 'exact': exact, 'examples': examples}
 
 
-def adapter_training_loss(model, adapter, q, z, x, mask, ce_weight, latent_weight):
+def latent_valid_mask(mask, latent_length):
+    """Mark latent positions whose encoder pooling window includes a valid token."""
+    if mask.ndim != 2 or latent_length < 1 or mask.shape[1] % latent_length:
+        raise ValueError('Token mask cannot be aligned with latent positions')
+    return mask.bool().reshape(mask.shape[0], latent_length, -1).any(-1)
+
+
+def adapter_training_loss(model, adapter, q, z, x, mask, ce_weight, latent_weight, latent_mask='all'):
     refined = adapter(q)
-    mse = F.mse_loss(refined.float(), z.float())
+    if latent_mask == 'valid':
+        latent_valid = latent_valid_mask(mask, refined.shape[1]).unsqueeze(-1)
+        squared = (refined.float() - z.float()).square() * latent_valid
+        mse = squared.sum() / (latent_valid.sum().clamp_min(1) * refined.shape[-1])
+    elif latent_mask == 'all':
+        mse = F.mse_loss(refined.float(), z.float())
+    else:
+        raise ValueError('Unknown latent mask mode')
     ce = None
     loss = latent_weight * mse
     if ce_weight:
@@ -93,17 +107,19 @@ def train(args, cfg, model, device):
             z = model.encode_z(x)
             q = model.vq.idx_to_z_q(model.vq.z_to_idx(z))
         # Only adapter parameters receive gradients; the original codec remains frozen.
-        loss, ce, mse = adapter_training_loss(model, adapter, q, z, x, mask, args.ce_weight, args.latent_weight)
+        loss, ce, mse = adapter_training_loss(model, adapter, q, z, x, mask, args.ce_weight, args.latent_weight, args.latent_mask)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(adapter.parameters(), 1.0)
         optimizer.step()
         if step % 100 == 0 and step % args.validate_every != 0:
             elapsed = time.perf_counter() - start
             print(json.dumps({'step': step, 'train_ce': float(ce.detach()) if ce is not None else None, 'latent_mse': float(mse.detach()),
+                              'valid_latent_fraction': float(latent_valid_mask(mask, q.shape[1]).float().mean()),
                               'examples_per_second_since_start': step * args.batch_size / max(elapsed, 1e-9)}), flush=True)
         if step % args.validate_every == 0 or step == args.steps:
             metrics = valid_metrics(model, adapter, val, device)
             print(json.dumps({'step': step, 'train_ce': float(ce.detach()) if ce is not None else None, 'latent_mse': float(mse.detach()),
+                              'valid_latent_fraction': float(latent_valid_mask(mask, q.shape[1]).float().mean()),
                               'validation': metrics, 'seconds': time.perf_counter()-start}), flush=True)
             if metrics['token_accuracy'] > best:
                 best, best_step = metrics['token_accuracy'], step
@@ -112,7 +128,8 @@ def train(args, cfg, model, device):
                             'codec_sha256': sha256_file(args.checkpoint), 'config_sha256': sha256_file(args.config),
                             'training_cache_sha256': sha256_file(Path(cfg.data.cache_dir)/'manifest.json'),
                             'validation_cache_sha256': sha256_file(Path(cfg.train.validation_cache_dir)/'manifest.json'),
-                            'latent_weight': args.latent_weight, 'ce_weight': args.ce_weight, 'validation': metrics}, out)
+                            'latent_weight': args.latent_weight, 'ce_weight': args.ce_weight,
+                            'latent_mask': args.latent_mask, 'validation': metrics}, out)
             adapter.train()
     print(f'Selected validation-best adapter: step={best_step}; accuracy={best:.2%}; file={out}', flush=True)
 
@@ -181,6 +198,7 @@ def main():
     p.add_argument('--batch-size', type=int, default=8); p.add_argument('--lr', type=float, default=0.0003)
     p.add_argument('--latent-weight', type=float, default=0.1); p.add_argument('--device', default='cuda')
     p.add_argument('--ce-weight', type=float, default=1.0)
+    p.add_argument('--latent-mask', choices=('all', 'valid'), default='all')
     p.add_argument('--architecture', choices=('mlp', 'attention'), default='mlp'); p.add_argument('--heads', type=int, default=4)
     p.add_argument('--benchmark', action='store_true', help='Benchmark decoder forward on the first evaluation batch')
     args = p.parse_args()
