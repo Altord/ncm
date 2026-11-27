@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory() as directory:
         np.array([[2,3,4,1]+[0]*12, [2,3,4,1]+[0]*12], dtype=np.int32).tofile(cache/'tokens.bin')
         np.array([[1]*4+[0]*12, [1]*4+[0]*12], dtype=np.uint8).tofile(cache/'mask.bin')
         save_cache_manifest(cache, 'tokenizer', 2, {'tokens': {'file':'tokens.bin','dtype':'int32','shape':[16]},
-                                                  'mask': {'file':'mask.bin','dtype':'uint8','shape':[16]}}, {})
+                                                  'mask': {'file':'mask.bin','dtype':'uint8','shape':[16]}}, {'source_sha256':'test-training-source', 'sequence_length':16})
     cfg = OmegaConf.create({'tokenizer': {}, 'model': {'context_length': 16}, 'data': {'cache_dir': str(root/'train')},
       'train': {'seed': 42, 'validation_cache_dir': str(root/'val')},
       'vqvae': {'in_vocab_size': 32, 'context_length': 16, 'embed_dim': 8, 'vqvae_vocab_size': [16,16],
@@ -66,4 +66,19 @@ with tempfile.TemporaryDirectory() as directory:
                 '--validate-every','1','--latent-mask','valid']
     with contextlib.redirect_stdout(io.StringIO()): screen.main()
     assert torch.load(root/'masked.pt', weights_only=False)['latent_mask'] == 'valid'
+    teacher = root/'teacher'; teacher.mkdir()
+    for name in ('tokens.bin', 'mask.bin'):
+        (teacher/name).write_bytes((root/'train'/name).read_bytes())
+    tokens = np.fromfile(teacher/'tokens.bin', dtype=np.int32).reshape(2,16)
+    np.stack([tokens, (tokens+1)%32, (tokens+2)%32, (tokens+3)%32], axis=-1).astype(np.int32).tofile(teacher/'ids.bin')
+    np.full((2,16,4), 0.25, dtype=np.float32).tofile(teacher/'probs.bin')
+    other = root/'other.pt'; other.write_bytes(b'second-teacher')
+    arrays = {'tokens':{'file':'tokens.bin','dtype':'int32','shape':[16]}, 'mask':{'file':'mask.bin','dtype':'uint8','shape':[16]},
+              'ensemble_topk_ids':{'file':'ids.bin','dtype':'int32','shape':[16,4]}, 'ensemble_topk_probs':{'file':'probs.bin','dtype':'float32','shape':[16,4]}}
+    save_cache_manifest(teacher, 'tokenizer', 2, arrays, {'source_sha256':'test-training-source','sequence_length':16,
+      'ensemble_distillation':{'topk':4,'checkpoint_sha256':[sha256_file(checkpoint),sha256_file(other)],'training_source_sha256':'test-training-source'}})
+    sys.argv = ['test','--mode','train',*common,'--output',str(root/'teacher-head.pt'),'--steps','1','--validate-every','1',
+                '--ensemble-cache',str(teacher),'--teacher-checkpoint-b',str(other),'--teacher-weight','0.1']
+    with contextlib.redirect_stdout(io.StringIO()): screen.main()
+    assert torch.load(root/'teacher-head.pt', weights_only=False)['teacher_weight'] == 0.1
 print('Latent refiner training and evaluation integration checks passed.')

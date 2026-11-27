@@ -24,15 +24,24 @@ assert adapter.net[-1].weight.grad is not None and torch.isfinite(adapter.net[-1
 assert all(p.grad is None for p in model.parameters())
 class NoDecoder:
     def decoder(self, _): raise AssertionError('Latent-only training must skip decoder')
-loss, ce, mse = adapter_training_loss(NoDecoder(), adapter, q, q + 1, x, torch.ones_like(x), 0, 1)
+loss, ce, mse, _, _ = adapter_training_loss(NoDecoder(), adapter, q, q + 1, x, torch.ones_like(x), 0, 1)
 assert ce is None and torch.isfinite(loss) and torch.isfinite(mse)
 mask = torch.tensor([[1, 1, 1, 0, 0, 0]], dtype=torch.bool)
 assert latent_valid_mask(mask, 3).tolist() == [[True, True, False]]
 identity = torch.nn.Identity()
 small_q = torch.zeros(1, 3, 1)
 small_z = torch.tensor([[[1.0], [1.0], [10.0]]])
-_, _, valid_mse = adapter_training_loss(NoDecoder(), identity, small_q, small_z, x, mask, 0, 1, 'valid')
+_, _, valid_mse, _, _ = adapter_training_loss(NoDecoder(), identity, small_q, small_z, x, mask, 0, 1, 'valid')
 assert valid_mse.item() == 1.0
+with torch.no_grad():
+    teacher_logits = model.decoder(q)
+    teacher_values, teacher_ids = teacher_logits.topk(4, dim=-1)
+    teacher_probs = torch.softmax(teacher_values, dim=-1)
+teacher_targets = teacher_ids[..., 0]
+teacher_loss, _, _, teacher_ce, teacher_count = adapter_training_loss(
+    model, adapter, q, q, teacher_targets, torch.ones_like(teacher_targets, dtype=torch.bool),
+    1.0, 0.1, teacher=(teacher_ids, teacher_probs), teacher_weight=0.1)
+assert torch.isfinite(teacher_loss) and torch.isfinite(teacher_ce) and teacher_count == teacher_targets.numel()
 try:
     latent_valid_mask(mask, 4)
     raise AssertionError('Incompatible latent length accepted')

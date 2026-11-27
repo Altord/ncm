@@ -11,6 +11,7 @@ from models.vqvae import VQVAE
 from models.latent_refiner import make_latent_refiner
 from training.data import encode_text, fixed_sequence, load_base_tokenizer, sha256_file
 from training.engine import make_loader, seed_all
+from training.reconstruction_loss import topk_teacher_distillation_loss
 from evaluation.ensemble_codec_methods import load_rows
 from evaluation.godot_csharp_codec_eval import visible_text
 
@@ -65,7 +66,7 @@ def latent_valid_mask(mask, latent_length):
     return mask.bool().reshape(mask.shape[0], latent_length, -1).any(-1)
 
 
-def adapter_training_loss(model, adapter, q, z, x, mask, ce_weight, latent_weight, latent_mask='all'):
+def adapter_training_loss(model, adapter, q, z, x, mask, ce_weight, latent_weight, latent_mask='all', teacher=None, teacher_weight=0.0):
     refined = adapter(q)
     if latent_mask == 'valid':
         latent_valid = latent_valid_mask(mask, refined.shape[1]).unsqueeze(-1)
@@ -77,12 +78,19 @@ def adapter_training_loss(model, adapter, q, z, x, mask, ce_weight, latent_weigh
         raise ValueError('Unknown latent mask mode')
     ce = None
     loss = latent_weight * mse
-    if ce_weight:
+    teacher_ce = teacher_count = None
+    if ce_weight or teacher_weight:
         logits = model.decoder(refined)
+    if ce_weight:
         ce = F.cross_entropy(logits.float().transpose(1, 2), x, reduction='none')
         ce = (ce * mask).sum() / mask.sum().clamp_min(1)
         loss = loss + ce_weight * ce
-    return loss, ce, mse
+    if teacher_weight:
+        if teacher is None: raise ValueError('Teacher data is required')
+        teacher_ce, teacher_count = topk_teacher_distillation_loss(logits, x, mask, [teacher])
+        # Normalize by all valid tokens, not just teacher-correct positions.
+        loss = loss + teacher_weight * teacher_ce * teacher_count / mask.sum().clamp_min(1)
+    return loss, ce, mse, teacher_ce, teacher_count
 
 
 def train(args, cfg, model, device):
@@ -91,7 +99,27 @@ def train(args, cfg, model, device):
     if not cfg.train.get('validation_cache_dir'): raise SystemExit('Validation cache is required')
     if not Path(cfg.data.cache_dir, 'manifest.json').is_file(): raise SystemExit('Training cache is missing')
     seed_all(int(cfg.train.seed))
-    loader = make_loader(cfg.data.cache_dir, args.batch_size, 0, True, int(cfg.train.seed))
+    training_cache = Path(cfg.data.cache_dir)
+    if args.teacher_weight:
+        if not args.ensemble_cache or not args.teacher_checkpoint_b:
+            raise ValueError('Teacher weight requires an ensemble cache and second checkpoint')
+        cached = Path(args.ensemble_cache)
+        base_manifest = json.loads((training_cache/'manifest.json').read_text(encoding='utf-8'))
+        teacher_manifest = json.loads((cached/'manifest.json').read_text(encoding='utf-8'))
+        metadata = teacher_manifest.get('ensemble_distillation', {})
+        if (not base_manifest.get('source_sha256') or metadata.get('topk') != 4 or metadata.get('checkpoint_sha256') != [sha256_file(args.checkpoint), sha256_file(args.teacher_checkpoint_b)] or
+            metadata.get('training_source_sha256') != base_manifest.get('source_sha256') or
+            teacher_manifest.get('count') != base_manifest.get('count') or teacher_manifest.get('sequence_length') != base_manifest.get('sequence_length')):
+            raise ValueError('Ensemble cache provenance differs from the codec training data or teacher checkpoints')
+        for name in ('tokens', 'mask'):
+            old = base_manifest['arrays'][name]; new = teacher_manifest['arrays'][name]
+            if old['dtype'] != new['dtype'] or old['shape'] != new['shape'] or sha256_file(training_cache/old['file']) != sha256_file(cached/new['file']):
+                raise ValueError(f'Ensemble cache {name} differs from reference training cache')
+        if not all(name in teacher_manifest['arrays'] for name in ('ensemble_topk_ids', 'ensemble_topk_probs')):
+            raise ValueError('Ensemble teacher arrays are missing')
+        training_cache = cached
+        print(f'Using verified cached ensemble teacher at {cached}; weight={args.teacher_weight}.', flush=True)
+    loader = make_loader(training_cache, args.batch_size, 0, True, int(cfg.train.seed))
     val = make_loader(cfg.train.validation_cache_dir, args.batch_size, 0, False, int(cfg.train.seed))
     width = int(cfg.vqvae.embed_dim); adapter = make_latent_refiner(width, width * 2, args.architecture, args.heads).to(device)
     optimizer = torch.optim.AdamW(adapter.parameters(), lr=args.lr)
@@ -107,18 +135,24 @@ def train(args, cfg, model, device):
             z = model.encode_z(x)
             q = model.vq.idx_to_z_q(model.vq.z_to_idx(z))
         # Only adapter parameters receive gradients; the original codec remains frozen.
-        loss, ce, mse = adapter_training_loss(model, adapter, q, z, x, mask, args.ce_weight, args.latent_weight, args.latent_mask)
+        teacher = None
+        if args.teacher_weight:
+            teacher = (batch['ensemble_topk_ids'].to(device).long(), batch['ensemble_topk_probs'].to(device).float())
+        loss, ce, mse, teacher_ce, teacher_count = adapter_training_loss(
+            model, adapter, q, z, x, mask, args.ce_weight, args.latent_weight, args.latent_mask, teacher, args.teacher_weight)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(adapter.parameters(), 1.0)
         optimizer.step()
         if step % 100 == 0 and step % args.validate_every != 0:
             elapsed = time.perf_counter() - start
             print(json.dumps({'step': step, 'train_ce': float(ce.detach()) if ce is not None else None, 'latent_mse': float(mse.detach()),
+                              'teacher_ce': float(teacher_ce.detach()) if teacher_ce is not None else None,
                               'valid_latent_fraction': float(latent_valid_mask(mask, q.shape[1]).float().mean()),
                               'examples_per_second_since_start': step * args.batch_size / max(elapsed, 1e-9)}), flush=True)
         if step % args.validate_every == 0 or step == args.steps:
             metrics = valid_metrics(model, adapter, val, device)
             print(json.dumps({'step': step, 'train_ce': float(ce.detach()) if ce is not None else None, 'latent_mse': float(mse.detach()),
+                              'teacher_ce': float(teacher_ce.detach()) if teacher_ce is not None else None,
                               'valid_latent_fraction': float(latent_valid_mask(mask, q.shape[1]).float().mean()),
                               'validation': metrics, 'seconds': time.perf_counter()-start}), flush=True)
             if metrics['token_accuracy'] > best:
@@ -126,10 +160,12 @@ def train(args, cfg, model, device):
                 torch.save({'adapter': adapter.state_dict(), 'width': width, 'hidden': width*2, 'step': step,
                             'architecture': args.architecture, 'heads': args.heads,
                             'codec_sha256': sha256_file(args.checkpoint), 'config_sha256': sha256_file(args.config),
-                            'training_cache_sha256': sha256_file(Path(cfg.data.cache_dir)/'manifest.json'),
+                            'training_cache_sha256': sha256_file(training_cache/'manifest.json'),
                             'validation_cache_sha256': sha256_file(Path(cfg.train.validation_cache_dir)/'manifest.json'),
                             'latent_weight': args.latent_weight, 'ce_weight': args.ce_weight,
-                            'latent_mask': args.latent_mask, 'validation': metrics}, out)
+                            'latent_mask': args.latent_mask, 'teacher_weight': args.teacher_weight,
+                            'teacher_checkpoint_b_sha256': sha256_file(args.teacher_checkpoint_b) if args.teacher_weight else None,
+                            'validation': metrics}, out)
             adapter.train()
     print(f'Selected validation-best adapter: step={best_step}; accuracy={best:.2%}; file={out}', flush=True)
 
@@ -199,11 +235,12 @@ def main():
     p.add_argument('--latent-weight', type=float, default=0.1); p.add_argument('--device', default='cuda')
     p.add_argument('--ce-weight', type=float, default=1.0)
     p.add_argument('--latent-mask', choices=('all', 'valid'), default='all')
+    p.add_argument('--ensemble-cache'); p.add_argument('--teacher-checkpoint-b'); p.add_argument('--teacher-weight', type=float, default=0.0)
     p.add_argument('--architecture', choices=('mlp', 'attention'), default='mlp'); p.add_argument('--heads', type=int, default=4)
     p.add_argument('--benchmark', action='store_true', help='Benchmark decoder forward on the first evaluation batch')
     args = p.parse_args()
     if (min(args.steps, args.validate_every, args.batch_size, args.heads) < 1 or args.lr <= 0 or
-        args.latent_weight < 0 or args.ce_weight < 0 or not (args.latent_weight or args.ce_weight)):
+        args.latent_weight < 0 or args.ce_weight < 0 or args.teacher_weight < 0 or not (args.latent_weight or args.ce_weight or args.teacher_weight)):
         p.error('Invalid training arguments')
     if args.mode == 'evaluate' and not all((args.adapter, args.input, args.baseline)): p.error('Evaluation needs adapter, input and baseline')
     device = torch.device(args.device)
