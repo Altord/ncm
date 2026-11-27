@@ -44,6 +44,7 @@ def main():
         p.add_argument('--'+name, required=True)
     p.add_argument('--max-per-repository', type=int, default=60)
     p.add_argument('--max-per-file', type=int, default=5)
+    p.add_argument('--extra-protected', action='append', default=[], help='Additional prior JSONL data to exclude; can be repeated')
     args = p.parse_args()
     root, out = Path(args.root).resolve(), Path(args.output)
     report_path = out.with_suffix('.manifest.json')
@@ -60,6 +61,7 @@ def main():
     if cache['source_sha256'] != sha256_file(a.data.input) or valcache['source_sha256'] != sha256_file(val):
         raise SystemExit('Original training/validation inputs do not match cache manifests')
     protected_paths = [Path(a.data.input), val, Path(args.method_train), Path(args.method_validation), Path(args.stress)]
+    protected_paths.extend(Path(path) for path in args.extra_protected)
     protected = []
     for path in protected_paths:
         for row in records(path):

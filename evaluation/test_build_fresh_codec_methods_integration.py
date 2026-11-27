@@ -33,6 +33,7 @@ with tempfile.TemporaryDirectory() as d:
     mt = write('method-train.jsonl', {'target':'void Unrelated() {}'})
     mv = write('method-val.jsonl', {'target':'void Different() {}'})
     stress = write('stress.jsonl', {'target':'void Other() {}'})
+    extra = write('extra.jsonl', {'target':'static int snakeM0(int x) => x + 0;'})
     cache = root/'cache'; cache.mkdir()
     vc = root/'valcache'; vc.mkdir()
     (cache/'manifest.json').write_text(json.dumps({'source_sha256':sha256_file(train)}))
@@ -44,9 +45,11 @@ with tempfile.TemporaryDirectory() as d:
     screen.subprocess.check_output = lambda *a, **kw: 'a'*40
     sys.argv = ['test', '--root',str(sources),'--reference-config',str(root/'a.yaml'),
         '--comparison-config',str(root/'b.yaml'),'--method-train',str(mt),'--method-validation',str(mv),
-        '--stress',str(stress),'--output',str(root/'methods.jsonl')]
+        '--stress',str(stress),'--extra-protected',str(extra),'--output',str(root/'methods.jsonl')]
     with contextlib.redirect_stdout(io.StringIO()): screen.main()
     report = json.loads((root/'methods.manifest.json').read_text())
     assert report['examples'] == 10 and report['dataset_sha256'] == sha256_file(root/'methods.jsonl')
     assert {r['source'].split('/')[0] for r in screen.records(root/'methods.jsonl')} == {'snake','flock'}
+    assert all('snakeM0' not in r['target'] for r in screen.records(root/'methods.jsonl'))
+    assert str(extra) in report['source_sha256']
 print('External method dataset integration checks passed.')
