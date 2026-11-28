@@ -223,6 +223,29 @@ def _make_zeroinit_residual_conv(D, kernel_size=3):
     return conv
 
 
+def rotation_straight_through(encoded, quantized, eps=1e-6):
+    """Forward exact quantized values; transport gradients by detached rotation.
+
+    Applied to the aggregate multiscale latent, rather than each residual
+    codebook. Degenerate zero or opposite vectors use the ordinary STE.
+    """
+    target = quantized.detach()
+    with torch.no_grad():
+        en = encoded.detach().norm(dim=-1, keepdim=True)
+        qn = target.norm(dim=-1, keepdim=True)
+        u = encoded.detach() / en.clamp_min(eps)
+        v = target / qn.clamp_min(eps)
+        midpoint = u + v
+        mn = midpoint.norm(dim=-1, keepdim=True)
+        w = midpoint / mn.clamp_min(eps)
+        scale = qn / en.clamp_min(eps)
+        valid = (en > eps) & (qn > eps) & (mn > eps)
+    rotated = scale * (encoded - 2 * (encoded * w).sum(-1, keepdim=True) * w
+                       + 2 * (encoded * u).sum(-1, keepdim=True) * v)
+    surrogate = torch.where(valid, rotated, encoded)
+    return surrogate + (target - surrogate).detach()
+
+
 class VectorQuantizerBaseClass(nn.Module):
     def __init__(self):
         super().__init__()
@@ -258,11 +281,15 @@ class MultiscaleResidualVectorQuantizer(VectorQuantizerBaseClass):
         pre_quant_norm_type='group',
         distance_fp32=False,
         final_level_loss_weight=1.0,
+        gradient_estimator='straight_through',
         aux=None,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.distance_fp32 = bool(distance_fp32)
+        if gradient_estimator not in ('straight_through', 'rotation'):
+            raise ValueError('Unknown quantizer gradient estimator')
+        self.gradient_estimator = gradient_estimator
         self.final_level_loss_weight = float(final_level_loss_weight)
         if not math.isfinite(self.final_level_loss_weight) or self.final_level_loss_weight <= 0:
             raise ValueError('final_level_loss_weight must be positive and finite')
@@ -561,7 +588,10 @@ class MultiscaleResidualVectorQuantizer(VectorQuantizerBaseClass):
                 vq_loss = weighted_level_loss(vq_loss_per_level, self.final_level_loss_weight)
         else:
             vq_loss = weighted_level_loss(vq_loss_per_level, self.final_level_loss_weight)
-        z_hat = z + (z_hat - z).detach()
+        if self.training and self.gradient_estimator == 'rotation':
+            z_hat = rotation_straight_through(z, z_hat)
+        else:
+            z_hat = z + (z_hat - z).detach()
 
         # Transfer all counters together: per-level .item() forced a GPU/CPU
         # synchronization for every quantizer level on every training step.
