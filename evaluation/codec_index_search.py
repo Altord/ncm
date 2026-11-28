@@ -40,6 +40,47 @@ def propose(model, codes, x, mask, budget):
     return proposals
 
 
+def propose_all_levels(model, codes, x, mask, budget):
+    """Rank individual code substitutions by their decoder-loss gradients."""
+    if codes.shape[0] != 1: raise ValueError('Expected one example')
+    vq = model.vq
+    length = int(vq.levels[-1])
+    with torch.no_grad(): base = vq.idx_to_z_q(codes).detach()
+    values, transformed, starts = [], [], []
+    offset = 0
+    for level, count in enumerate(vq.levels):
+        starts.append(offset); count = int(count)
+        current = codes[:, offset:offset+count]; offset += count
+        value = vq.embeddings[level](current).detach().requires_grad_(True)
+        full = vq._up_to_full(value, level, length) if level != len(vq.levels)-1 else value
+        values.append(value); transformed.append(vq._apply_quant_resi(full, level))
+    if offset != codes.shape[1]: raise ValueError('Unexpected VQ index layout')
+    latent = base
+    for t in transformed: latent = latent + (t - t.detach())
+    logits = model.decoder(latent)
+    ce = F.cross_entropy(logits.float().transpose(1, 2), x, reduction='none')
+    loss = (ce * mask).sum() / mask.sum().clamp_min(1)
+    gradients = torch.autograd.grad(loss, values)
+    choices = []
+    with torch.no_grad():
+        for level, (value, gradient, start) in enumerate(zip(values, gradients, starts)):
+            emb = vq.embeddings[level].weight.detach().float()
+            scores = gradient[0].float() @ emb.t() - (gradient[0].float() * value[0].float()).sum(-1, keepdim=True)
+            current = codes[0, start:start+scores.shape[0]]
+            scores.scatter_(1, current.unsqueeze(1), float('inf'))
+            n = min(budget, scores.numel() - scores.shape[0])
+            if n:
+                vals, flat = scores.flatten().topk(n, largest=False)
+                choices.extend((float(v), level, int(i), emb.shape[0]) for v, i in zip(vals, flat))
+    choices.sort(key=lambda t: t[0])
+    proposals = []
+    for _, level, flat, vocab in choices[:budget]:
+        position, token = divmod(flat, vocab)
+        trial = codes.clone(); trial[0, starts[level]+position] = token
+        proposals.append(trial)
+    return proposals
+
+
 def score(logits, x, mask):
     expanded = x.expand(logits.shape[0], -1)
     valid = mask.expand(logits.shape[0], -1)
@@ -61,6 +102,7 @@ def main():
     p.add_argument('--budget', type=int, default=4)
     p.add_argument('--rounds', type=int, default=1)
     p.add_argument('--initial-search', help='Stochastic-search JSONL with matching .report.json and .codes.pt')
+    p.add_argument('--all-levels', action='store_true', help='Rank substitutions across every VQ level')
     p.add_argument('--device', default='cuda')
     args = p.parse_args()
     if args.max_examples < 1 or args.budget < 1 or args.rounds < 1: p.error('Example, proposal and round budgets must be positive')
@@ -124,7 +166,7 @@ def main():
             new_errors, current_ce = int(initial_errors[0]), float(initial_ce[0])
         for _ in range(args.rounds):
             if selected == target or new_errors == 0: break
-            proposals = propose(model, selected_codes, x, mask, args.budget)
+            proposals = (propose_all_levels if args.all_levels else propose)(model, selected_codes, x, mask, args.budget)
             attempts += len(proposals)
             if not proposals: break
             with torch.no_grad():
@@ -153,6 +195,7 @@ def main():
                'attempts': attempts, 'budget_per_round': args.budget, 'max_rounds': args.rounds,
                'accepted_changes': accepted_total, 'seconds': time.perf_counter()-start_time,
                'initial_search_sha256': sha256_file(args.initial_search) if args.initial_search else None,
+               'all_levels': args.all_levels,
                'input_sha256': sha256_file(args.input), 'checkpoint_sha256': sha256_file(args.checkpoint),
                'codec_sha256': sha256_file(args.checkpoint),
                'scope': 'Encoder-side discrete VQ index search uses the known original and decoder predictions to choose codes. Decoder needs only selected VQ indices.',

@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
 from omegaconf import OmegaConf
 from models.vqvae import VQVAE
-from evaluation.codec_index_search import is_improvement, propose, score
+from evaluation.codec_index_search import is_improvement, propose, propose_all_levels, score
 
 cfg = OmegaConf.create({'in_vocab_size': 32, 'context_length': 16, 'embed_dim': 8,
  'vqvae_vocab_size': [16, 16], 'n_layers': 2, 'compression_factor': 1, 'dropout': 0.0,
@@ -26,6 +26,13 @@ for trial in trials:
     assert trial.shape == codes.shape
     assert int((trial != codes).sum()) == 1
     assert torch.equal(trial[:, :4], codes[:, :4])
+    with torch.no_grad():
+        errors, ce = score(model.decode(trial), x, valid)
+    assert errors.shape == ce.shape == (1,) and torch.isfinite(ce).all()
+trials = propose_all_levels(model, codes, x, valid, 32)
+assert len(trials) == 32
+for trial in trials:
+    assert trial.shape == codes.shape and int((trial != codes).sum()) == 1
     with torch.no_grad():
         errors, ce = score(model.decode(trial), x, valid)
     assert errors.shape == ce.shape == (1,) and torch.isfinite(ce).all()
