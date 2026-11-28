@@ -65,7 +65,9 @@ def main():
         'seconds': time.perf_counter()-start, 'input_sha256': sha256_file(args.input),
         'ensemble_sha256': sha256_file(args.ensemble),
         'scope': 'Known-target codec round trip. Compiler checks are evaluated after fixed-logit ensemble prediction; target used only for offline scoring.',
-        'limitations': 'No semantic or generator test. Reused development stress set. Two codecs require separate latent streams and compute.'}
+        'limitations': ('No semantic or generator test. Reused development stress set. '
+                        + ('Three' if report.get('checkpoint_c_sha256') else 'Two')
+                        + ' codecs require separate latent streams and compute.')}
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open('x', encoding='utf-8') as f:
         for row in rows: f.write(json.dumps(row, ensure_ascii=False)+'\n')
