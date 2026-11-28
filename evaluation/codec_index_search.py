@@ -60,6 +60,7 @@ def main():
     p.add_argument('--max-examples', type=int, default=64)
     p.add_argument('--budget', type=int, default=4)
     p.add_argument('--rounds', type=int, default=1)
+    p.add_argument('--initial-search', help='Stochastic-search JSONL with matching .report.json and .codes.pt')
     p.add_argument('--device', default='cuda')
     args = p.parse_args()
     if args.max_examples < 1 or args.budget < 1 or args.rounds < 1: p.error('Example, proposal and round budgets must be positive')
@@ -80,6 +81,16 @@ def main():
     model = VQVAE(**OmegaConf.create(vcfg))
     model.load_state_dict(torch.load(args.checkpoint, map_location='cpu', weights_only=False)['model'], strict=True)
     model.to(device).eval().requires_grad_(False)
+    initial = initial_codes = None
+    if args.initial_search:
+        initial_path = Path(args.initial_search)
+        initial_report = json.loads(initial_path.with_suffix('.report.json').read_text(encoding='utf-8'))
+        if initial_report['input_sha256'] != sha256_file(args.input) or initial_report['codec_sha256'] != sha256_file(args.checkpoint):
+            raise SystemExit('Initial search input or checkpoint differs')
+        initial = load_rows(initial_path)
+        code_rows = torch.load(initial_path.with_suffix('.codes.pt'), map_location='cpu', weights_only=True)
+        initial_codes = {r['id']: r for r in code_rows}
+        if initial.keys() != initial_codes.keys(): raise SystemExit('Initial search code IDs differ')
     rows, output, attempts, accepted_total = list(original.values())[:args.max_examples], [], 0, 0
     start_time = time.perf_counter()
     for i, row in enumerate(rows, 1):
@@ -100,6 +111,17 @@ def main():
         selected = before
         old_errors = int(errors[0]); new_errors = old_errors
         current_ce = float(ce[0]); accepted = 0
+        if initial is not None:
+            if key not in initial: raise SystemExit(f'Initial search missing: {key}')
+            selected_codes = initial_codes[key]['indices'].to(device).long().unsqueeze(0)
+            if int(initial_codes[key]['valid_length']) != int(mask.sum()): raise SystemExit('Initial valid length differs')
+            with torch.no_grad():
+                initial_logits = model.decode(selected_codes)
+                initial_errors, initial_ce = score(initial_logits, x, mask)
+                selected = visible_text(tok, initial_logits[0].argmax(-1).tolist(), eos, pad)
+            if selected != initial[key]['selected'] or int(initial_errors[0]) != initial[key]['selected_errors']:
+                raise SystemExit(f'Initial search index round trip differs: {key}')
+            new_errors, current_ce = int(initial_errors[0]), float(initial_ce[0])
         for _ in range(args.rounds):
             if selected == target or new_errors == 0: break
             proposals = propose(model, selected_codes, x, mask, args.budget)
@@ -130,7 +152,9 @@ def main():
                'selected_token_errors': sum(r['selected_token_errors'] for r in output),
                'attempts': attempts, 'budget_per_round': args.budget, 'max_rounds': args.rounds,
                'accepted_changes': accepted_total, 'seconds': time.perf_counter()-start_time,
+               'initial_search_sha256': sha256_file(args.initial_search) if args.initial_search else None,
                'input_sha256': sha256_file(args.input), 'checkpoint_sha256': sha256_file(args.checkpoint),
+               'codec_sha256': sha256_file(args.checkpoint),
                'scope': 'Encoder-side discrete VQ index search uses the known original and decoder predictions to choose codes. Decoder needs only selected VQ indices.',
                'limitations': 'Fixed first-N sample from repeatedly used data; no generation, compilation, behavior, packing, or full production timing. Requires additional encoder-side decoder and gradient work; does not reduce index count. The known input is necessary for selection; not applicable to unknown generated targets.'}
     out.parent.mkdir(parents=True, exist_ok=True)
