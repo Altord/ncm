@@ -10,10 +10,14 @@ from training.data import encode_text, fixed_sequence, load_base_tokenizer, sha2
 from evaluation.godot_csharp_codec_eval import visible_text
 
 
-def combine(a, b, c=None):
+def combine(a, b, c=None, weight_a=0.5):
     if a.shape != b.shape: raise ValueError('Codec logits differ in shape')
     if c is not None and a.shape != c.shape: raise ValueError('Codec logits differ in shape')
-    return (a.float() + b.float() + (c.float() if c is not None else 0)).argmax(-1)
+    if not 0 <= weight_a <= 1: raise ValueError('weight_a must be between zero and one')
+    if c is not None:
+        if weight_a != 0.5: raise ValueError('Weighted three-codec combination is unsupported')
+        return (a.float() + b.float() + c.float()).argmax(-1)
+    return (2 * weight_a * a.float() + 2 * (1 - weight_a) * b.float()).argmax(-1)
 
 
 def load_rows(path):
@@ -31,10 +35,12 @@ def main():
         p.add_argument('--'+name)
     p.add_argument('--batch-size', type=int, default=8)
     p.add_argument('--device', default='cuda')
+    p.add_argument('--weight-a', type=float, default=0.5)
     args = p.parse_args()
     if any((args.config_c, args.checkpoint_c, args.saved_c)) and not all((args.config_c, args.checkpoint_c, args.saved_c)):
         p.error('config-c, checkpoint-c and saved-c must be provided together')
     if args.batch_size < 1: p.error('batch size must be positive')
+    if not 0 <= args.weight_a <= 1 or (args.config_c and args.weight_a != 0.5): p.error('Invalid ensemble weight')
     out = Path(args.output)
     if out.exists() or out.with_suffix('.report.json').exists(): raise SystemExit('Output exists')
     cfg_a, cfg_b = OmegaConf.load(args.config_a), OmegaConf.load(args.config_b)
@@ -94,7 +100,7 @@ def main():
             logits_b = b.decode(b.encode(x)).float()
             pred_a, pred_b = logits_a.argmax(-1), logits_b.argmax(-1)
             logits_c = c.decode(c.encode(x)).float() if c is not None else None
-            combined = combine(logits_a, logits_b, logits_c)
+            combined = combine(logits_a, logits_b, logits_c, args.weight_a)
             correct += int(((combined == x) & valid).sum()); valid_total += int(valid.sum())
             for i, row in enumerate(group):
                 key, target = row['id'], row['target']
@@ -116,7 +122,8 @@ def main():
               'lost_exact_vs_a': sum(r['baseline_a_exact'] and not r['ensemble_exact'] for r in output),
               'input_sha256': sha256_file(args.input), 'checkpoint_a_sha256': sha256_file(args.checkpoint_a),
               'checkpoint_b_sha256': sha256_file(args.checkpoint_b), 'elapsed_seconds': time.perf_counter()-start,
-              'scope': 'Equal-weight average of logits from two separately encoded known-target frozen codecs; targets score only, not choose predictions.',
+              'weight_a': args.weight_a if c is None else None,
+              'scope': 'Weighted average of logits from two separately encoded known-target frozen codecs; targets score only, not choose predictions.',
               'limitations': 'Two codecs require separate latent streams and computation; not a generator test. Reused dataset, no compilation or behavior test. Matching tokenizer configuration does not verify tokenizer file identity.'}
     if c is not None:
         report['checkpoint_c_sha256'] = sha256_file(args.checkpoint_c)

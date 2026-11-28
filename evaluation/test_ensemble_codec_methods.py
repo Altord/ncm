@@ -8,7 +8,14 @@ from evaluation.ensemble_codec_methods import combine
 a = torch.tensor([[[4., 2., 0.], [0., 1., 0.]]])
 b = torch.tensor([[[0., 3., 0.], [0., 0., 4.]]])
 assert combine(a, b).tolist() == [[1, 2]]
+assert combine(a, b, weight_a=1.0).tolist() == [[0, 1]]
+assert combine(a, b, weight_a=0.0).tolist() == [[1, 2]]
 assert combine(a, b, torch.tensor([[[10., 0., 0.], [0., 8., 0.]]])).tolist() == [[0, 1]]
+try:
+    combine(a, b, weight_a=1.1)
+    raise AssertionError('Invalid weight accepted')
+except ValueError:
+    pass
 try:
     combine(a, b[:, :1])
     raise AssertionError('Mismatched logits accepted')
