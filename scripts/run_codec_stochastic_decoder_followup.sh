@@ -20,8 +20,8 @@ command -v dotnet >/dev/null || { echo 'dotnet SDK not found.' >&2; exit 1; }
 mkdir -p "$OUT"
 export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
 for name in holdout stress; do
- if [ "$name" = holdout ]; then SOURCE="$HOLD/methods.jsonl"; REF="$HOLD/new.jsonl"; else SOURCE="$INPUT"; REF="$SAVED/candidate.jsonl"; fi
- .venv/bin/python evaluation/godot_csharp_codec_eval.py --config "$MODEL/config.yaml" --checkpoint "$NEW/decoder.pt" --input "$SOURCE" --text-key target --code-only --batch-size 8 --output "$OUT/$name.jsonl"
+ if [ "$name" = holdout ]; then SOURCE="$HOLD/methods.jsonl"; REF="$HOLD/new.jsonl"; CODE=(--code-only); else SOURCE="$INPUT"; REF="$SAVED/candidate.jsonl"; CODE=(); fi
+ .venv/bin/python evaluation/godot_csharp_codec_eval.py --config "$MODEL/config.yaml" --checkpoint "$NEW/decoder.pt" --input "$SOURCE" --text-key target "${CODE[@]}" --batch-size 8 --output "$OUT/$name.jsonl"
  .venv/bin/python evaluation/compare_codec_pairs.py --reference "$REF" --candidate "$OUT/$name.jsonl"
 done
 # Reuse the original compiled stress baseline only when text matches; other candidates are compiled afresh.
