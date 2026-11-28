@@ -31,9 +31,10 @@ def main():
     p.add_argument('--batch-size',type=int,default=8); p.add_argument('--lr',type=float,default=1e-5)
     p.add_argument('--temperature',type=float,default=.05); p.add_argument('--top-k',type=int,default=2)
     p.add_argument('--deterministic-only',action='store_true')
+    p.add_argument('--search-proposals',type=int,default=0, help='Select from this many stochastic codes using training-token CE')
     p.add_argument('--validate-every',type=int,default=250); p.add_argument('--seed',type=int,default=42)
     args = p.parse_args(); out = Path(args.output)
-    if min(args.steps,args.batch_size,args.top_k,args.validate_every) < 1 or args.lr <= 0 or args.temperature <= 0: p.error('Invalid settings')
+    if min(args.steps,args.batch_size,args.top_k,args.validate_every) < 1 or args.lr <= 0 or args.temperature <= 0 or args.search_proposals < 0 or (args.deterministic_only and args.search_proposals): p.error('Invalid settings')
     if out.exists(): raise SystemExit('Output exists')
     device = torch.device(args.device)
     if device.type == 'cuda' and not torch.cuda.is_available(): raise SystemExit('GPU unavailable')
@@ -44,7 +45,8 @@ def main():
     training = make_loader(cfg.data.cache_dir,args.batch_size,0,True,args.seed)
     validation = make_loader(cfg.train.validation_cache_dir,args.batch_size,0,False,args.seed)
     model.decoder.requires_grad_(True)
-    training_description = 'decoder-only deterministic codes' if args.deterministic_only else 'decoder-only alternating stochastic codes'
+    training_description = (f'decoder-only best-of-{args.search_proposals} stochastic codes' if args.search_proposals else
+                            'decoder-only deterministic codes' if args.deterministic_only else 'decoder-only alternating stochastic codes')
     optimizer = torch.optim.AdamW(model.decoder.parameters(),lr=args.lr)
     baseline = validate(model,validation,device); best = baseline['token_accuracy']; best_step = 0
     print(json.dumps({'step':0,'validation':baseline}),flush=True)
@@ -59,8 +61,21 @@ def main():
         x = row['tokens'].to(device).long(); mask = row['mask'].to(device).bool()
         with torch.no_grad():
             z = model.encode_z(x)
-            model.vq.set_stochastic_encode(not args.deterministic_only and step % 2 == 0,temperature=args.temperature,top_k=args.top_k,top_p=1.)
+            model.vq.set_stochastic_encode(not args.deterministic_only and not args.search_proposals and step % 2 == 0,temperature=args.temperature,top_k=args.top_k,top_p=1.)
             indices = model.vq.z_to_idx(z)
+            if args.search_proposals:
+                model.decoder.eval()
+                def row_ce(idx):
+                    candidate = model.decoder(model.vq.idx_to_z_q(idx))
+                    ce = F.cross_entropy(candidate.float().transpose(1,2),x,reduction='none')
+                    return (ce*mask).sum(-1)/mask.sum(-1).clamp_min(1)
+                best_ce = row_ce(indices)
+                for _ in range(args.search_proposals):
+                    model.vq.set_stochastic_encode(True,temperature=args.temperature,top_k=args.top_k,top_p=1.)
+                    proposal = model.vq.z_to_idx(z); candidate_ce = row_ce(proposal)
+                    better = candidate_ce < best_ce
+                    best_ce = torch.where(better,candidate_ce,best_ce)
+                    indices = torch.where(better[:,None],proposal,indices)
             q = model.vq.idx_to_z_q(indices)
         model.vq.set_stochastic_encode(False); model.decoder.train()
         optimizer.zero_grad(set_to_none=True)
