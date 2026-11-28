@@ -54,7 +54,7 @@ def main():
                'ensemble_compiles': sum(r['compile_status'] == 'passed' for r in output),
                'ensemble_exact_text': sum(r['exact_text'] for r in output), 'new_compiler_calls': calls,
                'input_sha256': source_hash, 'ensemble_sha256': sha256_file(a.ensemble),
-               'scope': 'Known-input two-stream codec ensemble, selected without target labels.',
+               'scope': ensemble_meta['scope'],
                'limitations': 'Repeated stress set; compilation does not establish behavior or generation quality.'}
     with out.open('x', encoding='utf-8') as f:
         for r in output: f.write(json.dumps(r, ensure_ascii=False)+'\n')
