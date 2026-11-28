@@ -130,8 +130,13 @@ def main():
         if initial_report['input_sha256'] != sha256_file(args.input) or initial_report['codec_sha256'] != sha256_file(args.checkpoint):
             raise SystemExit('Initial search input or checkpoint differs')
         initial = load_rows(initial_path)
-        code_rows = torch.load(initial_path.with_suffix('.codes.pt'), map_location='cpu', weights_only=True)
-        initial_codes = {r['id']: r for r in code_rows}
+        codes_path = initial_path.with_suffix('.codes.pt')
+        if codes_path.exists():
+            code_rows = torch.load(codes_path, map_location='cpu', weights_only=True)
+            initial_codes = {r['id']: r for r in code_rows}
+        else:
+            if any('codes' not in r for r in initial.values()): raise SystemExit('Initial index codes missing')
+            initial_codes = {k: {'indices': torch.tensor(r['codes'])} for k, r in initial.items()}
         if initial.keys() != initial_codes.keys(): raise SystemExit('Initial search code IDs differ')
     rows, output, attempts, accepted_total = list(original.values())[:args.max_examples], [], 0, 0
     start_time = time.perf_counter()
@@ -156,12 +161,13 @@ def main():
         if initial is not None:
             if key not in initial: raise SystemExit(f'Initial search missing: {key}')
             selected_codes = initial_codes[key]['indices'].to(device).long().unsqueeze(0)
-            if int(initial_codes[key]['valid_length']) != int(mask.sum()): raise SystemExit('Initial valid length differs')
+            if 'valid_length' in initial_codes[key] and int(initial_codes[key]['valid_length']) != int(mask.sum()): raise SystemExit('Initial valid length differs')
             with torch.no_grad():
                 initial_logits = model.decode(selected_codes)
                 initial_errors, initial_ce = score(initial_logits, x, mask)
                 selected = visible_text(tok, initial_logits[0].argmax(-1).tolist(), eos, pad)
-            if selected != initial[key]['selected'] or int(initial_errors[0]) != initial[key]['selected_errors']:
+            saved_errors = initial[key].get('selected_errors', initial[key].get('selected_token_errors'))
+            if selected != initial[key]['selected'] or int(initial_errors[0]) != saved_errors:
                 raise SystemExit(f'Initial search index round trip differs: {key}')
             new_errors, current_ce = int(initial_errors[0]), float(initial_ce[0])
         for _ in range(args.rounds):
@@ -171,13 +177,18 @@ def main():
             if not proposals: break
             with torch.no_grad():
                 trial_codes = torch.cat(proposals, dim=0)
-                trial_logits = model.decode(trial_codes)
-                trial_errors, trial_ce = score(trial_logits, x, mask)
+                # Bound decoder/logit memory when testing wider proposal budgets.
+                error_chunks, ce_chunks = [], []
+                for chunk in trial_codes.split(16):
+                    trial_logits = model.decode(chunk)
+                    chunk_errors, chunk_ce = score(trial_logits, x, mask)
+                    error_chunks.append(chunk_errors); ce_chunks.append(chunk_ce)
+                trial_errors, trial_ce = torch.cat(error_chunks), torch.cat(ce_chunks)
                 order = sorted(range(len(proposals)), key=lambda j: (int(trial_errors[j]), float(trial_ce[j])))
                 best = order[0]
                 if not is_improvement(trial_errors[best], trial_ce[best], new_errors, current_ce): break
                 selected_codes = trial_codes[best:best+1]
-                selected = visible_text(tok, trial_logits[best].argmax(-1).tolist(), eos, pad)
+                selected = visible_text(tok, model.decode(selected_codes)[0].argmax(-1).tolist(), eos, pad)
                 new_errors, current_ce = int(trial_errors[best]), float(trial_ce[best])
                 accepted += 1
         accepted_total += accepted
